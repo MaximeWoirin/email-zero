@@ -1,0 +1,15 @@
+[package]
+name = "email-zero"
+version = "0.1.0"
+edition = "2021"
+description = "Pre-traitement d'emails par IA, headless : worker IMAP qui trie via un LLM OpenAI-compatible"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

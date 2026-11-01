@@ -12,5 +12,15 @@ reste l'interface unique — pas d'UI.
 
 ## Statut
 
-POC en cours de construction (jalon 0 : scaffold + CI). Méthodologie : TDD
-stricte, frontières IMAP/LLM en traits injectés.
+Jalon 0 livré : scaffold Rust (binaire `email-zero`, lib `config`/`ports`/`error`),
+frontières IMAP/LLM en traits injectés, config TOML validée (secrets par
+`*_env` uniquement), CI GitHub (fmt + clippy `-D warnings` + test).
+Méthodologie : TDD stricte, frontières IMAP/LLM en traits injectés.
+
+## Lancer
+
+```sh
+cp config.example.toml config.toml   # puis renseigner les noms de variables d'env
+cargo run -- --config config.toml --dry-run --once
+cargo test
+```
