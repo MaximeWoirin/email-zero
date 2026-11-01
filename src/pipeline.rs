@@ -61,6 +61,8 @@ pub struct PipelineConfig {
     pub confidence_threshold: f32,
     pub action: String,
     pub batch_size: usize,
+    /// Borne du corps injecte dans le prompt (issue #7) ; 0 = aucune troncature.
+    pub max_body_chars: usize,
     pub dry_run: bool,
     pub system_prompt: String,
     pub model: String,
@@ -97,6 +99,7 @@ pub fn pipeline_config_for(cfg: &Config, store: &Store, mailbox: &str) -> Result
         confidence_threshold: cfg.triage.confidence_threshold,
         action: cfg.triage.action.clone(),
         batch_size: cfg.llm.batch_size,
+        max_body_chars: cfg.llm.max_body_chars,
         // TODO(jalon 2b): prendre cli.dry_run depuis le CLI au lieu de false en dur.
         dry_run: false,
         system_prompt,
@@ -107,12 +110,25 @@ pub fn pipeline_config_for(cfg: &Config, store: &Store, mailbox: &str) -> Result
     })
 }
 
-/// Prompt user du batch : whitelist + profil semantique de chaque dossier + mails (uid embarque).
-/// Compact et stable d'un poll a l'autre : moins de tokens, decisions coherentes (spec).
+/// Tronque `body` a `max_chars` caracteres (borne sur les chars, pas les octets, pour
+/// preserver l'UTF-8) avec un marqueur explicite. `max_chars == 0` = aucune troncature.
+fn truncate_body(body: &str, max_chars: usize) -> String {
+    if max_chars == 0 || body.chars().count() <= max_chars {
+        return body.to_string();
+    }
+    let mut t: String = body.chars().take(max_chars).collect();
+    t.push_str("… [tronqué]");
+    t
+}
+
+/// Prompt user du batch : whitelist + profil semantique de chaque dossier + mails (uid embarque,
+/// corps borne a `max_body_chars`). Compact et stable d'un poll a l'autre : moins de tokens,
+/// decisions coherentes (spec).
 pub fn build_user_prompt(
     profiles: &[FolderProfile],
     whitelist: &[String],
     mails: &[(u32, ParsedMail)],
+    max_body_chars: usize,
 ) -> String {
     let mut out = String::from("Dossiers disponibles (whitelist stricte) :\n");
     for name in whitelist {
@@ -137,7 +153,9 @@ pub fn build_user_prompt(
     for (uid, mail) in mails {
         out.push_str(&format!(
             "---\nuid={uid}\nfrom: {}\nsubject: {}\nbody: {}\n",
-            mail.header.from, mail.header.subject, mail.body_text
+            mail.header.from,
+            mail.header.subject,
+            truncate_body(&mail.body_text, max_body_chars)
         ));
     }
     out
@@ -183,7 +201,12 @@ pub async fn run<M: MailClient, L: LlmClient>(
                 },
                 ChatMessage {
                     role: "user".into(),
-                    content: build_user_prompt(&cfg.profiles, &cfg.whitelist, &mails),
+                    content: build_user_prompt(
+                        &cfg.profiles,
+                        &cfg.whitelist,
+                        &mails,
+                        cfg.max_body_chars,
+                    ),
                 },
             ],
             temperature: cfg.temperature,

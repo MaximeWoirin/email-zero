@@ -70,6 +70,10 @@ pub struct LlmConfig {
     pub timeout_secs: u64,
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Borne du corps des mails injecte dans le prompt (un mail long ne doit pas
+    /// faire deborder le contexte et tuer tout le batch — revue PR #6, issue #7).
+    #[serde(default = "default_max_body_chars")]
+    pub max_body_chars: usize,
     #[serde(default)]
     pub rate_limit_per_min: u32,
     #[serde(default)]
@@ -302,6 +306,9 @@ fn default_timeout_secs() -> u64 {
 }
 fn default_batch_size() -> usize {
     15
+}
+fn default_max_body_chars() -> usize {
+    2000
 }
 fn default_max_attempts() -> u32 {
     3

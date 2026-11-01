@@ -30,6 +30,7 @@ max_tokens = 4096
 reasoning_effort = "low"
 timeout_secs = 90
 batch_size = 15
+max_body_chars = 2000           # borne du corps injecte dans le prompt (0 = illimite)
 rate_limit_per_min = 0
 
 [llm.retry]

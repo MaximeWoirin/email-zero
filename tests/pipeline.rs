@@ -166,6 +166,7 @@ fn setup() -> (Store, PipelineConfig) {
         confidence_threshold: 0.8,
         action: "copy".into(),
         batch_size: 15,
+        max_body_chars: 2000,
         dry_run: false,
         system_prompt: "PROMPT SYSTEME DE TEST".into(),
         model: "modele-test".into(),
@@ -434,4 +435,48 @@ async fn verdict_orphelin_seul_fait_echouer_le_batch() {
     assert!(err.to_string().contains("orphelin"));
     assert!(!store.is_processed("orange", "INBOX", 1, 1).unwrap());
     assert!(mail.copies.borrow().is_empty());
+}
+
+#[test]
+fn corps_long_tronque_au_seuil_avec_marqueur() {
+    let (mut store, mut cfg) = setup();
+    cfg.max_body_chars = 50;
+    let body = "a".repeat(200);
+    let mut mail = FakeMail::new(1);
+    mail.add_mail(1, "a@b.fr", "s1", &body);
+    let llm = FakeLlm::new(vec![batch(vec![verdict(1, "Factures", 0.9)])]);
+    let _ = run_tokio(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg);
+
+    let user = &llm.requests.borrow()[0].messages[1].content;
+    assert!(user.contains("… [tronqué]"), "marqueur absent: {user}");
+    assert!(!user.contains(&"a".repeat(200)), "corps non tronque");
+    let borne = "a".repeat(50);
+    assert!(user.contains(&borne));
+}
+
+#[test]
+fn corps_court_intact_sans_marqueur() {
+    let (mut store, cfg) = setup();
+    let mut mail = FakeMail::new(1);
+    mail.add_mail(1, "a@b.fr", "s1", "corps court");
+    let llm = FakeLlm::new(vec![batch(vec![verdict(1, "Factures", 0.9)])]);
+    let _ = run_tokio(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg);
+
+    let user = &llm.requests.borrow()[0].messages[1].content;
+    assert!(user.contains("corps court"));
+    assert!(!user.contains("tronqué"));
+}
+
+fn run_tokio(
+    mail: &mut FakeMail,
+    llm: &FakeLlm,
+    store: &mut Store,
+    mailbox: &str,
+    folder: &str,
+    cfg: &PipelineConfig,
+) -> RunStats {
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(run(mail, llm, store, mailbox, folder, cfg))
+        .unwrap()
 }

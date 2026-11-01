@@ -251,3 +251,33 @@ fn store_path_explicite_dans_le_toml() {
     let cfg = Config::parse(&toml_str).expect("config valide");
     assert_eq!(cfg.store.path, "/var/lib/email-zero/state.sqlite");
 }
+
+#[test]
+fn max_body_chars_par_defaut_a_2000_quand_absent() {
+    let minimal = r#"
+[[mailbox]]
+id = "solo"
+host = "127.0.0.1"
+port = 1143
+username = "a@b.c"
+password_env = "EZ_PW"
+
+[llm]
+base_url = "http://localhost:4000/v1"
+api_key_env = "EZ_LLM_API_KEY"
+model = "local"
+"#;
+    let cfg = Config::parse(minimal).expect("config minimale valide");
+    assert_eq!(cfg.llm.max_body_chars, 2000);
+}
+
+#[test]
+fn max_body_chars_explicite_dans_le_toml() {
+    let toml_str = FULL_TOML.replacen(
+        "rate_limit_per_min = 0",
+        "rate_limit_per_min = 0\nmax_body_chars = 500",
+        1,
+    );
+    let cfg = Config::parse(&toml_str).expect("config valide");
+    assert_eq!(cfg.llm.max_body_chars, 500);
+}
