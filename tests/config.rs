@@ -174,10 +174,7 @@ fn seuil_confiance_dans_0_1() {
 }
 
 #[test]
-fn secret_password_env_resolu_depuis_env() {
-    // SAFETY: test mono-thread concerns aside, std::env::set_var is unsafe in edition 2024;
-    // on reste en edition 2021 ou le test est acceptable, isole via serialisation implicite.
-    unsafe { std::env::set_var("EZ_TEST_SECRET", "s3cret") };
+fn secret_password_env_resolu_via_lookup_injecte() {
     let mb = MailboxConfig {
         id: "t".into(),
         host: "h".into(),
@@ -189,13 +186,12 @@ fn secret_password_env_resolu_depuis_env() {
         tls: true,
         poll_interval_secs: 300,
     };
-    assert_eq!(mb.resolve_password().unwrap(), "s3cret");
-    unsafe { std::env::remove_var("EZ_TEST_SECRET") };
+    let lookup = |name: &str| (name == "EZ_TEST_SECRET").then(|| "s3cret".to_string());
+    assert_eq!(mb.resolve_password(&lookup).unwrap(), "s3cret");
 }
 
 #[test]
 fn secret_manquant_erreur_nomme_la_variable() {
-    unsafe { std::env::remove_var("EZ_TEST_ABSENT") };
     let mb = MailboxConfig {
         id: "t".into(),
         host: "h".into(),
@@ -207,7 +203,8 @@ fn secret_manquant_erreur_nomme_la_variable() {
         tls: true,
         poll_interval_secs: 300,
     };
-    let err = mb.resolve_password().unwrap_err();
+    let lookup = |_name: &str| None;
+    let err = mb.resolve_password(&lookup).unwrap_err();
     assert!(err.to_string().contains("EZ_TEST_ABSENT"), "{err}");
 }
 
@@ -225,5 +222,6 @@ fn password_en_clair_tolere_mais_warning() {
         poll_interval_secs: 300,
     };
     assert!(mb.uses_plaintext_password());
-    assert_eq!(mb.resolve_password().unwrap(), "en-clair");
+    let lookup = |_name: &str| None;
+    assert_eq!(mb.resolve_password(&lookup).unwrap(), "en-clair");
 }
