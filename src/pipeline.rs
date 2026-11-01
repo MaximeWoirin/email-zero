@@ -97,6 +97,7 @@ pub fn pipeline_config_for(cfg: &Config, store: &Store, mailbox: &str) -> Result
         confidence_threshold: cfg.triage.confidence_threshold,
         action: cfg.triage.action.clone(),
         batch_size: cfg.llm.batch_size,
+        // TODO(jalon 2b): prendre cli.dry_run depuis le CLI au lieu de false en dur.
         dry_run: false,
         system_prompt,
         model: cfg.llm.model.clone(),
@@ -146,6 +147,10 @@ pub fn build_user_prompt(
 /// -> batchs LLM (structured output, reassociation par uid) -> decision pure -> action IMAP
 /// (copy/move, rien en dry-run) -> persistance processed + triage_result.
 /// Le flag SEEN n'est jamais touche. Toute erreur LLM/IMAP remonte sans marquer le batch.
+///
+/// Non idempotent en cas d'echec partiel : si l'action IMAP reussit puis la persistance
+/// echoue, le mail sera rejoue au poll suivant (doublon possible avec `copy` ; ne pas
+/// activer `move` avant stabilisation de ce point — revue PR #6).
 pub async fn run<M: MailClient, L: LlmClient>(
     mail: &mut M,
     llm: &L,
@@ -220,12 +225,20 @@ pub async fn run<M: MailClient, L: LlmClient>(
         for (uid, _parsed, decision) in decisions {
             match decision.action {
                 TriageAction::Copy => {
-                    let target = decision.target_folder.clone().unwrap_or_default();
+                    let target = decision.target_folder.clone().ok_or_else(|| {
+                        Error::Store(
+                            "decision Copy sans target_folder : invariant decide() viole".into(),
+                        )
+                    })?;
                     mail.copy(folder, uid, &target).await?;
                     stats.copied += 1;
                 }
                 TriageAction::Move => {
-                    let target = decision.target_folder.clone().unwrap_or_default();
+                    let target = decision.target_folder.clone().ok_or_else(|| {
+                        Error::Store(
+                            "decision Move sans target_folder : invariant decide() viole".into(),
+                        )
+                    })?;
                     mail.r#move(folder, uid, &target).await?;
                     stats.moved += 1;
                 }

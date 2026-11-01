@@ -415,3 +415,23 @@ async fn le_prompt_embarque_la_whitelist_les_profils_et_le_system_prompt() {
     assert!(user.contains("Facture octobre"));
     assert!(user.contains("corps de la facture"));
 }
+
+#[tokio::test]
+async fn verdict_orphelin_seul_fait_echouer_le_batch() {
+    let (mut store, cfg) = setup();
+    let mut mail = FakeMail::new(1);
+    mail.add_mail(1, "a@b.fr", "s1", "corps");
+    let llm = FakeLlm::new(vec![batch(vec![
+        verdict(1, "Factures", 0.9),
+        verdict(99, "Newsletters", 0.9),
+    ])]);
+
+    let err = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, Error::Llm(_)));
+    assert!(err.to_string().contains("orphelin"));
+    assert!(!store.is_processed("orange", "INBOX", 1, 1).unwrap());
+    assert!(mail.copies.borrow().is_empty());
+}

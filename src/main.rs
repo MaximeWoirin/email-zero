@@ -44,10 +44,10 @@ async fn main() -> Result<()> {
 
     let plaintext = cfg.plaintext_password_mailboxes();
     if !plaintext.is_empty() {
-        eprintln!(
-            "WARNING: mot de passe en clair dans la config pour les boites: {} — \
-             utiliser password_env ou password_cmd (tolere pour le POC uniquement)",
-            plaintext.join(", ")
+        tracing::warn!(
+            mailboxes = ?plaintext,
+            "mot de passe en clair dans la config — utiliser password_env ou password_cmd \
+             (tolere pour le POC uniquement)"
         );
     }
 
