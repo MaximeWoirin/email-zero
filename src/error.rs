@@ -10,6 +10,12 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("parsing config TOML: {0}")]
     Toml(#[from] toml::de::Error),
+    #[error("state store: {0}")]
+    Store(String),
+    #[error("sqlite: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    #[error("json: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -49,3 +49,18 @@ pub trait LlmClient {
 
 **CI dès le jour 1** : `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`. Aucun merge avec un warning.
 
+## Traçabilité jalons ↔ PR
+
+| Jalon | Contenu | PR | Statut |
+|-------|---------|-----|--------|
+| 0 | Scaffold Rust, config TOML validée, frontières en traits, CI | #1 (branche `vibe/jalon-0-scaffold-ci-ad3e52`) | mergée |
+| 0+ | Durcissement secrets (Debug masqué, env injecté, `password_cmd`, warning clair) + écarts actés | #3 (mergée dans la branche du jalon 0, **pas dans main** — à merger séparément) | mergée |
+| 1 | State store SQLite (schéma spec) + décision de triage pure (whitelist, seuil, UIDVALIDITY) | #4 (`vibe/jalon-1-store-triage-f47681`) | en revue |
+| 2+ | Pipeline de triage complet (fake IMAP + fake LLM), découverte des dossiers, clients réels IMAP/LLM, daemon `--once`/poll — à découper à la revue suivante | — | à venir |
+
+Notes pour plus tard (actées en revue de #4) :
+
+- `Store::pending_uids` fait un COUNT par UID (N+1) : OK à l'échelle d'une boîte perso, à rebattre en un seul `IN (...)` si le backfill historique (v2, API Batch) arrive.
+- `LlmVerdict` ne porte pas le `uid` : la réassociation verdict → mail se fera dans le moteur de triage (le batch embarque les uid dans le prompt).
+- Le chemin du fichier SQLite n'est pas encore dans le TOML : à ajouter avec le jalon pipeline (daemon `--once`).
+
