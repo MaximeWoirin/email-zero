@@ -2,6 +2,18 @@
 
 *Basé sur le design "Email Zero — Design v1" (validé). Méthodologie : TDD stricte.*
 
+## Écarts actés (jalon 0, 2026-11-01)
+
+- **Crate unique** au lieu d'un workspace à 6 crates (ez-config, ez-store…). Pour un POC
+  c'est mieux : moins de cérémonie, compilation plus rapide. Écart endossé.
+- **Pas de `rustfmt.toml` / `clippy.toml`** : les defaults suffisent. Non bloquant.
+- **Sécurité des secrets (corrigé en jalon 0+)** : `Debug` custom sur `MailboxConfig`
+  masque les champs secret (`***`) ; test de rédaction `tests/secrets.rs`. La lecture
+  d'env est **injectée** dans `resolve_password(&dyn Fn(&str) -> Option<String>)` :
+  aucun `std::env::set_var`/`unsafe` dans les tests (ils tournaient en parallèle dans le
+  même process — racy). `password_cmd` implémenté (`sh -c`, sortie stdout trimmée) et le
+  warning « mot de passe en clair » est branché au chargement de la config dans `main`.
+
 ## Règles du jeu (transverses)
 
 **Le cycle TDD est obligatoire pour chaque brique** : un test qui échoue → constat de l'échec → code minimal pour le passer → suite verte → refactor. Aucune ligne de code de production n'est écrite avant son test.

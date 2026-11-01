@@ -17,7 +17,7 @@ pub struct Config {
     pub log: LogConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct MailboxConfig {
     pub id: String,
     pub host: String,
@@ -31,6 +31,25 @@ pub struct MailboxConfig {
     pub tls: bool,
     #[serde(default = "default_poll_interval_secs")]
     pub poll_interval_secs: u64,
+}
+
+impl std::fmt::Debug for MailboxConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MailboxConfig")
+            .field("id", &self.id)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password_env", &self.password_env.as_ref().map(|_| "***"))
+            .field("password_cmd", &self.password_cmd.as_ref().map(|_| "***"))
+            .field(
+                "password_plain",
+                &self.password_plain.as_ref().map(|_| "***"),
+            )
+            .field("tls", &self.tls)
+            .field("poll_interval_secs", &self.poll_interval_secs)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -144,6 +163,14 @@ impl Config {
         }
         Ok(())
     }
+
+    pub fn plaintext_password_mailboxes(&self) -> Vec<&str> {
+        self.mailboxes
+            .iter()
+            .filter(|m| m.uses_plaintext_password())
+            .map(|m| m.id.as_str())
+            .collect()
+    }
 }
 
 impl MailboxConfig {
@@ -166,17 +193,41 @@ impl MailboxConfig {
         self.password_plain.is_some()
     }
 
-    pub fn resolve_password(&self) -> Result<String> {
+    pub fn resolve_password(&self, env_lookup: &dyn Fn(&str) -> Option<String>) -> Result<String> {
         if let Some(env) = &self.password_env {
-            return std::env::var(env).map_err(|_| Error::MissingSecretEnv(env.clone()));
+            return env_lookup(env).ok_or_else(|| Error::MissingSecretEnv(env.clone()));
+        }
+        if let Some(cmd) = &self.password_cmd {
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .output()
+                .map_err(|e| {
+                    Error::Config(format!(
+                        "mailbox {}: password_cmd {cmd:?} injoignable: {e}",
+                        self.id
+                    ))
+                })?;
+            if !output.status.success() {
+                return Err(Error::Config(format!(
+                    "mailbox {}: password_cmd {cmd:?} a echoue (code {:?})",
+                    self.id,
+                    output.status.code()
+                )));
+            }
+            return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
         }
         if let Some(plain) = &self.password_plain {
             return Ok(plain.clone());
         }
         Err(Error::Config(format!(
-            "mailbox {}: password_cmd non encore supporte au jalon 0",
+            "mailbox {}: aucune source de secret definie",
             self.id
         )))
+    }
+
+    pub fn resolve_password_from_env(&self) -> Result<String> {
+        self.resolve_password(&|name| std::env::var(name).ok())
     }
 }
 
