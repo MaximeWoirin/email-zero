@@ -51,5 +51,9 @@ sample_per_folder = 20
 examples_in_prompt = 3
 exclude_folders = ["Sent", "Drafts", "Trash", "Junk"]
 
+# ---- State store ----
+[store]
+path = "data/email-zero.sqlite"  # cree avec son repertoire parent si absent
+
 [log]
 level = "info"

@@ -55,12 +55,14 @@ pub trait LlmClient {
 |-------|---------|-----|--------|
 | 0 | Scaffold Rust, config TOML validée, frontières en traits, CI | #1 (branche `vibe/jalon-0-scaffold-ci-ad3e52`) | mergée |
 | 0+ | Durcissement secrets (Debug masqué, env injecté, `password_cmd`, warning clair) + écarts actés | #3 (mergée dans la branche du jalon 0, **pas dans main** — à merger séparément) | mergée |
-| 1 | State store SQLite (schéma spec) + décision de triage pure (whitelist, seuil, UIDVALIDITY) | #4 (`vibe/jalon-1-store-triage-f47681`) | en revue |
-| 2+ | Pipeline de triage complet (fake IMAP + fake LLM), découverte des dossiers, clients réels IMAP/LLM, daemon `--once`/poll — à découper à la revue suivante | — | à venir |
+| 1 | State store SQLite (schéma spec) + décision de triage pure (whitelist, seuil, UIDVALIDITY) | #4 (`vibe/jalon-1-store-triage-f47681`) | mergée |
+| 2a | Moteur de pipeline async (`src/pipeline.rs`) testé avec fake IMAP + fake LLM (10 tests d'intégration zéro réseau) : `SEARCH UNSEEN` → dédup `processed` (UIDVALIDITY exposé par `MailClient::uidvalidity`) → batchs LLM structured output réassociés par `uid` → décision pure → `copy`/`move` (rien en `--dry-run`) → persistance `processed` + `triage_result`. Prompt de triage v1 (`prompts/triage.md`), schéma batch `BATCH_SCHEMA`. `store.path` dans le TOML (création du répertoire parent), logging JSON (`main`). Clients réels + daemon = 2b/2c | `vibe/jalon-2a-pipeline-triage-6fdc40` | en revue |
+| 2b | Clients réels IMAP (`async-imap` + TLS) et LLM (OpenAI-compatible), retry/backoff configurés | — | à venir |
+| 2c | Job de découverte des dossiers (LIST + special-use, échantillonnage, profilage LLM, `discovery_run`) + daemon `--once`/poll par boîte | — | à venir |
 
 Notes pour plus tard (actées en revue de #4) :
 
 - `Store::pending_uids` fait un COUNT par UID (N+1) : OK à l'échelle d'une boîte perso, à rebattre en un seul `IN (...)` si le backfill historique (v2, API Batch) arrive.
 - `LlmVerdict` ne porte pas le `uid` : la réassociation verdict → mail se fera dans le moteur de triage (le batch embarque les uid dans le prompt).
-- Le chemin du fichier SQLite n'est pas encore dans le TOML : à ajouter avec le jalon pipeline (daemon `--once`).
+- Le chemin du fichier SQLite est dans le TOML (`[store].path`, défaut `data/email-zero.sqlite`) depuis le jalon 2a.
 

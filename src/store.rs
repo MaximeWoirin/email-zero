@@ -106,6 +106,16 @@ fn now_iso8601_utc() -> String {
     iso8601_utc(secs)
 }
 
+/// Cree le repertoire parent du fichier SQLite s'il n'existe pas (ex: data/).
+fn ensure_parent_dir(path: &str) -> Result<()> {
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    Ok(())
+}
+
 /// Conversion secondes-since-epoch -> ISO 8601 UTC ("YYYY-MM-DDTHH:MM:SSZ").
 /// Algorithme jours->civil de Howard Hinnant ; teste dans tests/timestamps.rs
 /// sur des dates connues verifiees independamment (GNU date).
@@ -137,6 +147,9 @@ impl Store {
     }
 
     pub fn open(path: &str) -> Result<Self> {
+        if path != ":memory:" {
+            ensure_parent_dir(path)?;
+        }
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         // CREATE TABLE IF NOT EXISTS : idempotent, la reouverture d'une DB existante

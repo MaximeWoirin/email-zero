@@ -14,6 +14,8 @@ pub struct Config {
     #[serde(default)]
     pub discovery: DiscoveryConfig,
     #[serde(default)]
+    pub store: StoreSection,
+    #[serde(default)]
     pub log: LogConfig,
 }
 
@@ -119,6 +121,12 @@ pub struct DiscoveryConfig {
     pub examples_in_prompt: usize,
     #[serde(default = "default_exclude_folders")]
     pub exclude_folders: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StoreSection {
+    #[serde(default = "default_store_path")]
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -261,6 +269,14 @@ impl Default for DiscoveryConfig {
     }
 }
 
+impl Default for StoreSection {
+    fn default() -> Self {
+        Self {
+            path: default_store_path(),
+        }
+    }
+}
+
 impl Default for LogConfig {
     fn default() -> Self {
         Self {
@@ -316,6 +332,9 @@ fn default_exclude_folders() -> Vec<String> {
         .iter()
         .map(|s| s.to_string())
         .collect()
+}
+fn default_store_path() -> String {
+    "data/email-zero.sqlite".into()
 }
 fn default_log_level() -> String {
     "info".into()

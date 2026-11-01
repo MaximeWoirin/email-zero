@@ -16,6 +16,10 @@ pub enum Error {
     Sqlite(#[from] rusqlite::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("llm: {0}")]
+    Llm(String),
+    #[error("imap: {0}")]
+    Imap(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
