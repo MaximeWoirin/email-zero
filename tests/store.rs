@@ -5,6 +5,28 @@ fn open_store() -> Store {
     Store::open_in_memory().expect("store in-memory")
 }
 
+#[test]
+fn reouverture_d_une_db_fichier_est_idempotente() {
+    let dir = std::env::temp_dir().join(format!("email-zero-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("state.db");
+    let path_str = path.to_str().unwrap().to_string();
+
+    {
+        let mut store = Store::open(&path_str).unwrap();
+        store.sync_mailboxes(&["orange".to_string()]).unwrap();
+        store.mark_processed("orange", "INBOX", 42, 7).unwrap();
+    }
+    {
+        // deuxieme ouverture : les CREATE TABLE IF NOT EXISTS repassent sans erreur
+        // et les donnees persistent
+        let store = Store::open(&path_str).unwrap();
+        assert_eq!(store.mailbox_ids().unwrap(), vec!["orange".to_string()]);
+        assert!(store.is_processed("orange", "INBOX", 42, 7).unwrap());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn decision(target: Option<&str>, action: TriageAction) -> TriageDecision {
     TriageDecision {
         target_folder: target.map(|s| s.to_string()),

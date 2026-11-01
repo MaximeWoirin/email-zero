@@ -3,6 +3,9 @@ use serde::Deserialize;
 use crate::error::{Error, Result};
 
 /// Verdict brut renvoye par le LLM pour un mail du batch (deserialise depuis le JSON strict).
+/// Pas de `uid` ici : la reassociation verdict -> mail se fera dans le moteur de triage
+/// (le LLM recoit le batch avec les uid embarques dans le prompt, et la reponse est
+/// reassociee par position/uid a ce moment-la).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct LlmVerdict {
     pub category: String,

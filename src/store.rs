@@ -103,7 +103,14 @@ fn now_iso8601_utc() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let z = secs as i64 + 719_468;
+    iso8601_utc(secs)
+}
+
+/// Conversion secondes-since-epoch -> ISO 8601 UTC ("YYYY-MM-DDTHH:MM:SSZ").
+/// Algorithme jours->civil de Howard Hinnant ; teste dans tests/timestamps.rs
+/// sur des dates connues verifiees independamment (GNU date).
+pub fn iso8601_utc(secs: u64) -> String {
+    let z = (secs / 86_400) as i64 + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = (z - era * 146_097) as u64;
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
@@ -132,6 +139,8 @@ impl Store {
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        // CREATE TABLE IF NOT EXISTS : idempotent, la reouverture d'une DB existante
+        // repasse sans erreur (couvert par reouverture_d_une_db_fichier_est_idempotente).
         conn.execute_batch(SCHEMA)?;
         Ok(Self { conn })
     }
@@ -190,6 +199,8 @@ impl Store {
     }
 
     /// UIDs de `uids` pas encore traites pour ce (mailbox, folder, uidvalidity), ordre conserve.
+    /// N+1 : une requete COUNT par UID. OK a l'echelle d'une boite perso (poll de quelques
+    /// mails) ; a rebatir en un seul IN (...) si le backfill historique (v2) arrive.
     pub fn pending_uids(
         &self,
         mailbox: &str,
