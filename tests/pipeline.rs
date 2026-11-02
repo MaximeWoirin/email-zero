@@ -480,3 +480,36 @@ fn run_tokio(
         .block_on(run(mail, llm, store, mailbox, folder, cfg))
         .unwrap()
 }
+
+#[test]
+fn pipeline_config_for_propage_le_flag_dry_run_explicite() {
+    let toml_str = r#"
+[[mailbox]]
+id = "orange"
+host = "127.0.0.1"
+port = 1143
+username = "a@b.c"
+password_env = "EZ_PW"
+
+[llm]
+base_url = "http://localhost:4000/v1"
+api_key_env = "EZ_LLM_API_KEY"
+model = "local"
+max_body_chars = 1234
+"#;
+    let cfg = email_zero::config::Config::parse(toml_str).unwrap();
+    let mut store = Store::open_in_memory().unwrap();
+    store.sync_mailboxes(&["orange".to_string()]).unwrap();
+    store
+        .upsert_folders("orange", &[("Factures", None, false)])
+        .unwrap();
+
+    let pc_on = email_zero::pipeline::pipeline_config_for(&cfg, &store, "orange", true).unwrap();
+    assert!(pc_on.dry_run);
+    assert_eq!(pc_on.max_body_chars, 1234);
+    assert_eq!(pc_on.whitelist, vec!["Factures".to_string()]);
+    assert!(!pc_on.system_prompt.is_empty());
+
+    let pc_off = email_zero::pipeline::pipeline_config_for(&cfg, &store, "orange", false).unwrap();
+    assert!(!pc_off.dry_run);
+}

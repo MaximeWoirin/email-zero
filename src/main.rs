@@ -72,5 +72,17 @@ async fn main() -> Result<()> {
              aucun acces serveur effectue (state store ouvert et synchronise)"
         );
     }
+
+    for mb in &cfg.mailboxes {
+        let pc = email_zero::pipeline::pipeline_config_for(&cfg, &store, &mb.id, cli.dry_run)?;
+        tracing::info!(
+            mailbox = %mb.id,
+            dry_run = pc.dry_run,
+            whitelist = ?pc.whitelist,
+            batch_size = pc.batch_size,
+            max_body_chars = pc.max_body_chars,
+            "pipeline config construite"
+        );
+    }
     Ok(())
 }

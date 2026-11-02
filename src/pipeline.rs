@@ -84,7 +84,13 @@ pub struct RunStats {
 
 /// Construit le PipelineConfig d'une boite a partir du TOML + du state store :
 /// prompt systeme lu depuis `triage.prompt_path`, whitelist et profils depuis `folder`.
-pub fn pipeline_config_for(cfg: &Config, store: &Store, mailbox: &str) -> Result<PipelineConfig> {
+/// `dry_run` est un parametre explicite (venu du CLI) : la fonction reste pure/testable.
+pub fn pipeline_config_for(
+    cfg: &Config,
+    store: &Store,
+    mailbox: &str,
+    dry_run: bool,
+) -> Result<PipelineConfig> {
     let system_prompt = std::fs::read_to_string(&cfg.triage.prompt_path)?;
     let whitelist = store.whitelist(mailbox)?;
     let mut profiles = Vec::with_capacity(whitelist.len());
@@ -100,8 +106,7 @@ pub fn pipeline_config_for(cfg: &Config, store: &Store, mailbox: &str) -> Result
         action: cfg.triage.action.clone(),
         batch_size: cfg.llm.batch_size,
         max_body_chars: cfg.llm.max_body_chars,
-        // TODO(jalon 2b): prendre cli.dry_run depuis le CLI au lieu de false en dur.
-        dry_run: false,
+        dry_run,
         system_prompt,
         model: cfg.llm.model.clone(),
         temperature: cfg.llm.temperature,
