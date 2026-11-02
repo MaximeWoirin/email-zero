@@ -23,6 +23,16 @@ seuil de confiance (sous le seuil -> INBOX), action `copy`/`move`/`dry_run`,
 gestion de l'`UIDVALIDITY` (changement = retraitement du dossier).
 Méthodologie : TDD stricte, frontières IMAP/LLM en traits injectés.
 
+Jalon 2a livré : moteur de pipeline de triage async (`src/pipeline.rs`), testé en
+intégration avec fake IMAP + fake LLM scripté (zéro réseau, `tests/pipeline.rs`) :
+`SEARCH UNSEEN` → dédup via le state store (changement d'`UIDVALIDITY` = retraitement
+du dossier) → batchs LLM en structured output réassociés par `uid` → décision pure
+(whitelist, seuil de confiance) → `copy`/`move` sur le serveur (aucune écriture en
+`--dry-run`) → persistance `processed` + `triage_result`. Le prompt de triage v1 vit
+dans `prompts/triage.md`, le chemin du state store dans `[store].path` du TOML.
+Restent au jalon 2b/2c : clients réels IMAP/LLM, job de découverte des dossiers et
+daemon `--once`/poll.
+
 ## Lancer
 
 ```sh

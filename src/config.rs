@@ -14,6 +14,8 @@ pub struct Config {
     #[serde(default)]
     pub discovery: DiscoveryConfig,
     #[serde(default)]
+    pub store: StoreSection,
+    #[serde(default)]
     pub log: LogConfig,
 }
 
@@ -68,6 +70,10 @@ pub struct LlmConfig {
     pub timeout_secs: u64,
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Borne du corps des mails injecte dans le prompt (un mail long ne doit pas
+    /// faire deborder le contexte et tuer tout le batch — revue PR #6, issue #7).
+    #[serde(default = "default_max_body_chars")]
+    pub max_body_chars: usize,
     #[serde(default)]
     pub rate_limit_per_min: u32,
     #[serde(default)]
@@ -119,6 +125,12 @@ pub struct DiscoveryConfig {
     pub examples_in_prompt: usize,
     #[serde(default = "default_exclude_folders")]
     pub exclude_folders: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StoreSection {
+    #[serde(default = "default_store_path")]
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -261,6 +273,14 @@ impl Default for DiscoveryConfig {
     }
 }
 
+impl Default for StoreSection {
+    fn default() -> Self {
+        Self {
+            path: default_store_path(),
+        }
+    }
+}
+
 impl Default for LogConfig {
     fn default() -> Self {
         Self {
@@ -286,6 +306,9 @@ fn default_timeout_secs() -> u64 {
 }
 fn default_batch_size() -> usize {
     15
+}
+fn default_max_body_chars() -> usize {
+    2000
 }
 fn default_max_attempts() -> u32 {
     3
@@ -316,6 +339,9 @@ fn default_exclude_folders() -> Vec<String> {
         .iter()
         .map(|s| s.to_string())
         .collect()
+}
+fn default_store_path() -> String {
+    "data/email-zero.sqlite".into()
 }
 fn default_log_level() -> String {
     "info".into()

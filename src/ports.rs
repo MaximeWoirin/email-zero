@@ -43,6 +43,9 @@ pub struct ChatMessage {
 #[allow(async_fn_in_trait)]
 pub trait MailClient {
     async fn list_folders(&mut self) -> Result<Vec<Folder>>;
+    /// UIDVALIDITY du dossier : un changement signifie que les UIDs ont ete reattribues
+    /// -> le state store retraite tout le dossier (spec : gestion de l'UIDVALIDITY).
+    async fn uidvalidity(&mut self, folder: &str) -> Result<u32>;
     async fn search_unseen(&mut self, folder: &str) -> Result<Vec<u32>>;
     async fn fetch_headers(&mut self, folder: &str, uid: u32) -> Result<MailHeader>;
     async fn fetch_body(&mut self, folder: &str, uid: u32) -> Result<ParsedMail>;

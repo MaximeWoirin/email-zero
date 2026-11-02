@@ -207,3 +207,20 @@ fn profile_dossier_mis_en_cache_avec_description_et_exemples() {
     assert_eq!(profile.examples.len(), 2);
     assert!(!profile.updated_at.is_empty(), "timestamp ISO 8601 present");
 }
+
+#[test]
+fn ouverture_cree_le_repertoire_parent_du_fichier_sqlite() {
+    let dir = std::env::temp_dir().join(format!(
+        "ez-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let path = dir.join("sous-dossier/state.sqlite");
+    let path_str = path.to_str().unwrap().to_string();
+    let store = Store::open(&path_str).expect("ouverture avec creation du parent");
+    assert!(path.exists());
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+}
