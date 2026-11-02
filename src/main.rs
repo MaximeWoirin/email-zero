@@ -73,6 +73,9 @@ async fn main() -> Result<()> {
         );
     }
 
+    // Fail-fast assume (revue PR #9) : pipeline_config_for lit triage.prompt_path,
+    // donc le binaire refuse de demarrer si le fichier de prompt est absent —
+    // pertinent pour le daemon du jalon 2b (pas de run a vide silencieux).
     for mb in &cfg.mailboxes {
         let pc = email_zero::pipeline::pipeline_config_for(&cfg, &store, &mb.id, cli.dry_run)?;
         tracing::info!(

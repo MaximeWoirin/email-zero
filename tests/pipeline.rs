@@ -483,7 +483,21 @@ fn run_tokio(
 
 #[test]
 fn pipeline_config_for_propage_le_flag_dry_run_explicite() {
-    let toml_str = r#"
+    // prompt ecrit dans un fichier temporaire : le test ne depend pas de la
+    // disposition des fichiers du depot (retour de revue PR #9).
+    let dir = std::env::temp_dir().join(format!(
+        "ez-test-prompt-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let prompt_path = dir.join("prompt.md");
+    std::fs::write(&prompt_path, "PROMPT DE TEST").unwrap();
+
+    let toml_str = format!(
+        r#"
 [[mailbox]]
 id = "orange"
 host = "127.0.0.1"
@@ -496,8 +510,13 @@ base_url = "http://localhost:4000/v1"
 api_key_env = "EZ_LLM_API_KEY"
 model = "local"
 max_body_chars = 1234
-"#;
-    let cfg = email_zero::config::Config::parse(toml_str).unwrap();
+
+[triage]
+prompt_path = {:?}
+"#,
+        prompt_path.to_str().unwrap()
+    );
+    let cfg = email_zero::config::Config::parse(&toml_str).unwrap();
     let mut store = Store::open_in_memory().unwrap();
     store.sync_mailboxes(&["orange".to_string()]).unwrap();
     store
@@ -508,8 +527,10 @@ max_body_chars = 1234
     assert!(pc_on.dry_run);
     assert_eq!(pc_on.max_body_chars, 1234);
     assert_eq!(pc_on.whitelist, vec!["Factures".to_string()]);
-    assert!(!pc_on.system_prompt.is_empty());
+    assert_eq!(pc_on.system_prompt, "PROMPT DE TEST");
 
     let pc_off = email_zero::pipeline::pipeline_config_for(&cfg, &store, "orange", false).unwrap();
     assert!(!pc_off.dry_run);
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
