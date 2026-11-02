@@ -1,6 +1,9 @@
 use clap::Parser;
+use email_zero::clients::imap::{connect, ImapMailClient};
+use email_zero::clients::llm::OpenAiLlmClient;
 use email_zero::config::Config;
 use email_zero::error::Result;
+use email_zero::pipeline::{pipeline_config_for, run};
 use email_zero::store::Store;
 use tracing_subscriber::EnvFilter;
 
@@ -66,18 +69,15 @@ async fn main() -> Result<()> {
         "email-zero demarre"
     );
 
-    if cli.once || cli.dry_run || cli.refresh_folders {
-        tracing::info!(
-            "les clients IMAP/LLM reels et le job de decouverte arrivent au jalon 2b ; \
-             aucun acces serveur effectue (state store ouvert et synchronise)"
-        );
-    }
+    let llm = OpenAiLlmClient::new_from_env(&cfg.llm)?;
 
     // Fail-fast assume (revue PR #9) : pipeline_config_for lit triage.prompt_path,
-    // donc le binaire refuse de demarrer si le fichier de prompt est absent —
-    // pertinent pour le daemon du jalon 2b (pas de run a vide silencieux).
+    // donc le binaire refuse de demarrer si le fichier de prompt est absent.
     for mb in &cfg.mailboxes {
-        let pc = email_zero::pipeline::pipeline_config_for(&cfg, &store, &mb.id, cli.dry_run)?;
+        let password = mb.resolve_password_from_env()?;
+        let session = connect(mb, &password).await?;
+        let mut mail = ImapMailClient::new(session, cfg.imap_retry.retry.clone());
+        let pc = pipeline_config_for(&cfg, &store, &mb.id, cli.dry_run)?;
         tracing::info!(
             mailbox = %mb.id,
             dry_run = pc.dry_run,
@@ -86,6 +86,23 @@ async fn main() -> Result<()> {
             max_body_chars = pc.max_body_chars,
             "pipeline config construite"
         );
+        let stats = run(&mut mail, &llm, &mut store, &mb.id, "INBOX", &pc).await?;
+        tracing::info!(
+            mailbox = %mb.id,
+            scanned = stats.scanned,
+            pending = stats.pending,
+            decided = stats.decided,
+            copied = stats.copied,
+            moved = stats.moved,
+            planned = stats.planned,
+            left_in_inbox = stats.left_in_inbox,
+            "poll termine"
+        );
+        if !cli.once {
+            let interval = tokio::time::Duration::from_secs(mb.poll_interval_secs);
+            tracing::info!(mailbox = %mb.id, interval_secs = mb.poll_interval_secs, "poll suivant");
+            tokio::time::sleep(interval).await;
+        }
     }
     Ok(())
 }

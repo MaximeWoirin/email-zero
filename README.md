@@ -30,8 +30,12 @@ du dossier) → batchs LLM en structured output réassociés par `uid` → déci
 (whitelist, seuil de confiance) → `copy`/`move` sur le serveur (aucune écriture en
 `--dry-run`) → persistance `processed` + `triage_result`. Le prompt de triage v1 vit
 dans `prompts/triage.md`, le chemin du state store dans `[store].path` du TOML.
-Restent au jalon 2b/2c : clients réels IMAP/LLM, job de découverte des dossiers et
-daemon `--once`/poll.
+Jalon 2b livré : clients réels IMAP (`async-imap` + rustls, `src/clients/imap.rs`) et LLM
+OpenAI-compatible (`reqwest`, `src/clients/llm.rs`), retry/backoff exponentiel configurés
+(`[imap.retry]`/`[llm.retry]`, `src/retry.rs`) ; `main` connecte chaque boîte et lance
+`pipeline::run` sur INBOX (`--once` = un poll puis sortie, sinon poll toutes les
+`poll_interval_secs`). Tests sans réseau externe : mini-serveurs IMAP/HTTP sur loopback.
+Reste au jalon 2c : job de découverte des dossiers.
 
 ## Lancer
 

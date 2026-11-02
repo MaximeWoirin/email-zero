@@ -1,5 +1,5 @@
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
@@ -22,7 +22,7 @@ pub struct ParsedMail {
     pub body_text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct JsonChatRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
@@ -32,7 +32,7 @@ pub struct JsonChatRequest {
     pub response_format_json_schema: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
