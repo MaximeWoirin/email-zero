@@ -99,6 +99,27 @@ async fn erreur_definitive_apres_max_attempts() {
 }
 
 #[tokio::test]
+async fn erreur_non_retryable_court_circuite_le_retry() {
+    let calls = RefCell::new(0u32);
+    let err = with_retry(
+        &cfg(5, 0),
+        || {
+            *calls.borrow_mut() += 1;
+            async { Err::<(), _>(Error::LlmNonRetryable("400 bad request".into())) }
+        },
+        |_| async {},
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, Error::LlmNonRetryable(_)));
+    assert_eq!(
+        *calls.borrow(),
+        1,
+        "une erreur non-retryable ne doit pas etre retentee"
+    );
+}
+
+#[tokio::test]
 async fn max_attempts_zero_est_traite_comme_une_seule_tentative() {
     let calls = RefCell::new(0u32);
     let err = with_retry(

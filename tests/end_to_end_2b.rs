@@ -61,7 +61,7 @@ async fn spawn_fake_imap() -> (u16, Arc<Mutex<ImapLog>>) {
                                 args.split(' ').next().and_then(|s| s.parse().ok()).unwrap_or(0);
                             let body = MAIL_1.as_bytes();
                             format!(
-                                "* 1 FETCH (UID {uid} RFC822 {{{}}}\r\n{MAIL_1})\r\n{tag} OK FETCH ok\r\n",
+                                "* 1 FETCH (UID {uid} BODY[] {{{}}}\r\n{MAIL_1})\r\n{tag} OK FETCH ok\r\n",
                                 body.len()
                             )
                         }

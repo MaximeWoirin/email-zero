@@ -204,9 +204,10 @@ async fn retry_sur_erreur_http_puis_succes() {
 }
 
 #[tokio::test]
-async fn erreur_http_definitive_remorte_apres_max_attempts() {
-    let (base, _rec, counter) = spawn_llm_server_with_multi(vec![400, 400], String::new()).await;
-    let cfg = llm_cfg(&base, 2);
+async fn erreur_4xx_hors_429_n_est_pas_retentee() {
+    let (base, _rec, counter) =
+        spawn_llm_server_with_multi(vec![400, 400, 400], String::new()).await;
+    let cfg = llm_cfg(&base, 3);
     let client = OpenAiLlmClient::new(&cfg, &|_| Some("k".into())).unwrap();
 
     let err = match client.chat_json_schema::<Batch>(req(), BATCH_SCHEMA).await {
@@ -214,8 +215,114 @@ async fn erreur_http_definitive_remorte_apres_max_attempts() {
         Ok(_) => panic!("devrait echouer"),
     };
 
+    assert!(matches!(err, Error::LlmNonRetryable(_)), "err: {err}");
     assert!(err.to_string().contains("400"), "err: {err}");
-    assert_eq!(counter.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "un 400 ne doit pas etre retente"
+    );
+}
+
+#[tokio::test]
+async fn erreur_429_est_retentee() {
+    let content = r#"{"verdicts":[]}"#;
+    let (base, _rec, counter) =
+        spawn_llm_server_with_multi(vec![429, 200], content.to_string()).await;
+    let cfg = llm_cfg(&base, 3);
+    let client = OpenAiLlmClient::new(&cfg, &|_| Some("k".into())).unwrap();
+
+    let batch: Batch = client.chat_json_schema(req(), BATCH_SCHEMA).await.unwrap();
+
+    assert!(batch.verdicts.is_empty());
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        2,
+        "le 429 doit etre retente"
+    );
+}
+
+#[tokio::test]
+async fn erreur_5xx_est_retentee_jusqu_au_max() {
+    let (base, _rec, counter) =
+        spawn_llm_server_with_multi(vec![500, 500, 500], String::new()).await;
+    let cfg = llm_cfg(&base, 3);
+    let client = OpenAiLlmClient::new(&cfg, &|_| Some("k".into())).unwrap();
+
+    let err = match client.chat_json_schema::<Batch>(req(), BATCH_SCHEMA).await {
+        Err(e) => e,
+        Ok(_) => panic!("devrait echouer"),
+    };
+
+    assert!(matches!(err, Error::Llm(_)), "err: {err}");
+    assert_eq!(counter.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn chat_json_honore_response_format_json_schema_de_la_requete() {
+    let content = r#"{"verdicts":[]}"#;
+    let (base, recorded, _c) = spawn_llm_server(vec![200], content.to_string()).await;
+    let cfg = llm_cfg(&base, 1);
+    let client = OpenAiLlmClient::new(&cfg, &|_| Some("k".into())).unwrap();
+
+    // chat_json (pas chat_json_schema) avec response_format_json_schema renseigne
+    let mut r = req();
+    r.response_format_json_schema = Some(BATCH_SCHEMA.into());
+    let batch: Batch = client.chat_json(r).await.unwrap();
+
+    assert!(batch.verdicts.is_empty());
+    let rec = &recorded.lock().unwrap()[0];
+    assert_eq!(rec.body["response_format"]["type"], "json_schema");
+}
+
+#[tokio::test]
+async fn chat_json_sans_schema_n_envoie_pas_de_response_format() {
+    let content = r#"{"verdicts":[]}"#;
+    let (base, recorded, _c) = spawn_llm_server(vec![200], content.to_string()).await;
+    let cfg = llm_cfg(&base, 1);
+    let client = OpenAiLlmClient::new(&cfg, &|_| Some("k".into())).unwrap();
+
+    let mut r = req();
+    r.response_format_json_schema = None;
+    let _: Batch = client.chat_json(r).await.unwrap();
+
+    let rec = &recorded.lock().unwrap()[0];
+    assert!(
+        rec.body.get("response_format").is_none(),
+        "pas de response_format attendu: {}",
+        rec.body
+    );
+}
+
+#[test]
+fn base_url_http_non_loopback_est_refuse() {
+    let err =
+        email_zero::clients::llm::validate_base_url("http://litellm.example.com/v1").unwrap_err();
+    assert!(err.to_string().contains("https://"), "err: {err}");
+}
+
+#[test]
+fn base_url_sans_scheme_est_refuse() {
+    assert!(email_zero::clients::llm::validate_base_url("litellm.example.com/v1").is_err());
+}
+
+#[test]
+fn base_url_https_et_loopback_sont_acceptes() {
+    assert!(email_zero::clients::llm::validate_base_url("https://litellm.example.com/v1").is_ok());
+    assert!(email_zero::clients::llm::validate_base_url("http://127.0.0.1:4000/v1").is_ok());
+    assert!(email_zero::clients::llm::validate_base_url("http://localhost:4000/v1").is_ok());
+}
+
+#[tokio::test]
+async fn client_llm_refuse_une_base_url_http_distante() {
+    let mut cfg = llm_cfg("http://litellm-distant.example.com/v1", 1);
+    let err = match OpenAiLlmClient::new(&cfg, &|_| Some("k".into())) {
+        Err(e) => e,
+        Ok(_) => panic!("devrait refuser http non-loopback"),
+    };
+    assert!(err.to_string().contains("https://"), "err: {err}");
+    cfg.base_url = "https://litellm.example.com/v1".into();
+    assert!(OpenAiLlmClient::new(&cfg, &|_| Some("k".into())).is_ok());
 }
 
 #[tokio::test]

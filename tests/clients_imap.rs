@@ -16,6 +16,7 @@ const MAIL_2: &str = "From: news@shop.fr\r\nTo: bob@example.com\r\nSubject: Prom
 struct FakeImapState {
     copies: Vec<(u32, String)>,
     moves: Vec<(u32, String)>,
+    fetch_queries: Vec<String>,
 }
 
 async fn spawn_fake_imap() -> (u16, Arc<Mutex<FakeImapState>>) {
@@ -24,6 +25,7 @@ async fn spawn_fake_imap() -> (u16, Arc<Mutex<FakeImapState>>) {
     let state = Arc::new(Mutex::new(FakeImapState {
         copies: Vec::new(),
         moves: Vec::new(),
+        fetch_queries: Vec::new(),
     }));
     let state_out = state.clone();
     tokio::spawn(async move {
@@ -76,10 +78,12 @@ async fn spawn_fake_imap() -> (u16, Arc<Mutex<FakeImapState>>) {
                                 .next()
                                 .and_then(|s| s.parse().ok())
                                 .unwrap_or(0);
+                            let query = args.split_once(' ').map(|x| x.1).unwrap_or("").to_string();
+                            state_out.lock().unwrap().fetch_queries.push(query);
                             let mail = if uid == 1 { MAIL_1 } else { MAIL_2 };
                             let body = mail.as_bytes();
                             format!(
-                                "* 1 FETCH (UID {uid} RFC822 {{{}}}\r\n{mail})\r\n{tag} OK FETCH ok\r\n",
+                                "* 1 FETCH (UID {uid} BODY[] {{{}}}\r\n{mail})\r\n{tag} OK FETCH ok\r\n",
                                 body.len()
                             )
                         }
@@ -133,7 +137,7 @@ async fn connect_client(port: u16) -> ImapMailClient {
         username: "bob@example.com".into(),
         password_env: None,
         password_cmd: None,
-        password_plain: Some("secret".into()),
+        password_plain: Some("jeton-de-test".into()),
         tls: false,
         poll_interval_secs: 300,
     };
@@ -194,6 +198,17 @@ async fn fetch_body_parse_le_mail_rfc5322() {
     assert!(mail.body_text.contains("facture EDF"));
     let h = client.fetch_headers("INBOX", 1).await.unwrap();
     assert_eq!(h.subject, "Facture octobre");
+}
+
+#[tokio::test]
+async fn fetch_utilise_body_peek_pour_ne_jamais_poser_seen() {
+    let (port, state) = spawn_fake_imap().await;
+    let mut client = connect_client(port).await;
+
+    client.fetch_body("INBOX", 1).await.unwrap();
+
+    let st = state.lock().unwrap();
+    assert_eq!(st.fetch_queries, vec!["BODY.PEEK[]".to_string()]);
 }
 
 #[tokio::test]

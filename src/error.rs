@@ -18,6 +18,9 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("llm: {0}")]
     Llm(String),
+    /// Erreur LLM definitive (ex: HTTP 4xx hors 429) : `with_retry` ne retente pas.
+    #[error("llm (non retentable): {0}")]
+    LlmNonRetryable(String),
     #[error("imap: {0}")]
     Imap(String),
 }

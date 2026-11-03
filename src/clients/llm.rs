@@ -61,9 +61,35 @@ pub struct OpenAiLlmClient {
     retry: RetryConfig,
 }
 
+/// Un `base_url` en `http://` transmettrait la cle API en clair sur le reseau :
+/// on exige `https://`, sauf loopback (127.0.0.1/localhost/::1) pour les tests
+/// et les proxies locaux (ex: LiteLLM en conteneur cote a cote).
+pub fn validate_base_url(base_url: &str) -> Result<()> {
+    let lower = base_url.to_ascii_lowercase();
+    if lower.starts_with("https://") {
+        return Ok(());
+    }
+    if lower.starts_with("http://") {
+        let host = lower
+            .strip_prefix("http://")
+            .and_then(|rest| rest.split(['/', ':']).next())
+            .unwrap_or("");
+        if matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]") {
+            return Ok(());
+        }
+        return Err(Error::Config(format!(
+            "llm.base_url doit etre en https:// (cle API transmise en bearer) ; recu: {base_url}.              http:// n'est accepte que pour le loopback (tests, proxy local)"
+        )));
+    }
+    Err(Error::Config(format!(
+        "llm.base_url doit commencer par https:// (ou http:// en loopback), recu: {base_url}"
+    )))
+}
+
 impl OpenAiLlmClient {
     /// `api_key_lookup` injecte pour les tests (aucun env reel requis).
     pub fn new(cfg: &LlmConfig, api_key_lookup: &dyn Fn(&str) -> Option<String>) -> Result<Self> {
+        validate_base_url(&cfg.base_url)?;
         let api_key = api_key_lookup(&cfg.api_key_env)
             .ok_or_else(|| Error::MissingSecretEnv(cfg.api_key_env.clone()))?;
         let http = reqwest::Client::builder()
@@ -88,7 +114,9 @@ impl OpenAiLlmClient {
         req: &JsonChatRequest,
         schema: Option<&str>,
     ) -> Result<T> {
-        let response_format = match schema {
+        // chat_json (sans schema) honore aussi req.response_format_json_schema si
+        // le caller l'a renseigne : une seule source de verite pour le format.
+        let response_format = match schema.or(req.response_format_json_schema.as_deref()) {
             Some(s) => Some(response_format_from_schema(s)?),
             None => None,
         };
@@ -126,6 +154,13 @@ impl OpenAiLlmClient {
                         .await
                         .map_err(|e| Error::Llm(format!("lecture reponse: {e}")))?;
                     if !status.is_success() {
+                        // 4xx (sauf 429) = erreur client definitive : pas de retry.
+                        if status.is_client_error() && status.as_u16() != 429 {
+                            return Err(Error::LlmNonRetryable(format!(
+                                "HTTP {status} depuis {url}: {}",
+                                text.chars().take(500).collect::<String>()
+                            )));
+                        }
                         return Err(Error::Llm(format!(
                             "HTTP {status} depuis {url}: {}",
                             text.chars().take(500).collect::<String>()

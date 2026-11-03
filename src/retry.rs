@@ -31,6 +31,10 @@ where
         match op().await {
             Ok(v) => return Ok(v),
             Err(e) => {
+                // erreur marquee comme definitive (ex: HTTP 4xx) : pas de retry
+                if matches!(e, crate::error::Error::LlmNonRetryable(_)) {
+                    return Err(e);
+                }
                 if attempt >= cfg.max_attempts.max(1) {
                     return Err(e);
                 }

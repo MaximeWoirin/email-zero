@@ -39,39 +39,50 @@ pub fn tls_connector() -> Result<TlsConnector> {
 /// Connecte et authentifie une session IMAP reelle : TLS si `mb.tls` (port 993),
 /// TCP clair sinon (ex: Proton Bridge en local, port 1143). Le mot de passe est
 /// resolu hors de cette fonction (jamais loggue).
+/// Delai global applique a chaque phase de la connexion (TCP, handshake TLS,
+/// greeting + LOGIN) : une connexion qui bloque ne doit pas figer le daemon.
+pub const CONNECT_PHASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub async fn connect(mb: &MailboxConfig, password: &str) -> Result<BoxSession> {
     let addr = format!("{}:{}", mb.host, mb.port);
-    let tcp = TcpStream::connect(&addr)
+    let tcp = tokio::time::timeout(CONNECT_PHASE_TIMEOUT, TcpStream::connect(&addr))
         .await
+        .map_err(|_| Error::Imap(format!("timeout TCP {addr} ({CONNECT_PHASE_TIMEOUT:?})")))?
         .map_err(|e| Error::Imap(format!("connexion TCP {addr}: {e}")))?;
     if mb.tls {
         let connector = tls_connector()?;
         let server_name = ServerName::try_from(mb.host.clone())
             .map_err(|e| Error::Imap(format!("nom de serveur TLS invalide {}: {e}", mb.host)))?;
-        let tls = connector
-            .connect(server_name, tcp)
+        let tls = tokio::time::timeout(CONNECT_PHASE_TIMEOUT, connector.connect(server_name, tcp))
             .await
+            .map_err(|_| {
+                Error::Imap(format!(
+                    "timeout handshake TLS {addr} ({CONNECT_PHASE_TIMEOUT:?})"
+                ))
+            })?
             .map_err(|e| Error::Imap(format!("handshake TLS {addr}: {e}")))?;
         let mut client = Client::new(Box::new(tls) as Box<dyn DebugStream>);
-        let _greeting = client
-            .read_response()
+        let _greeting = tokio::time::timeout(CONNECT_PHASE_TIMEOUT, client.read_response())
             .await
+            .map_err(|_| Error::Imap(format!("timeout greeting ({CONNECT_PHASE_TIMEOUT:?})")))?
             .map_err(|e| Error::Imap(format!("greeting: {e}")))?;
-        let session = client
-            .login(&mb.username, password)
-            .await
-            .map_err(|(e, _c)| Error::Imap(format!("login {}: {e}", mb.username)))?;
+        let session =
+            tokio::time::timeout(CONNECT_PHASE_TIMEOUT, client.login(&mb.username, password))
+                .await
+                .map_err(|_| Error::Imap(format!("timeout login ({CONNECT_PHASE_TIMEOUT:?})")))?
+                .map_err(|(e, _c)| Error::Imap(format!("login {}: {e}", mb.username)))?;
         Ok(session)
     } else {
         let mut client = Client::new(Box::new(tcp) as Box<dyn DebugStream>);
-        let _greeting = client
-            .read_response()
+        let _greeting = tokio::time::timeout(CONNECT_PHASE_TIMEOUT, client.read_response())
             .await
+            .map_err(|_| Error::Imap(format!("timeout greeting ({CONNECT_PHASE_TIMEOUT:?})")))?
             .map_err(|e| Error::Imap(format!("greeting: {e}")))?;
-        let session = client
-            .login(&mb.username, password)
-            .await
-            .map_err(|(e, _c)| Error::Imap(format!("login {}: {e}", mb.username)))?;
+        let session =
+            tokio::time::timeout(CONNECT_PHASE_TIMEOUT, client.login(&mb.username, password))
+                .await
+                .map_err(|_| Error::Imap(format!("timeout login ({CONNECT_PHASE_TIMEOUT:?})")))?
+                .map_err(|(e, _c)| Error::Imap(format!("login {}: {e}", mb.username)))?;
         Ok(session)
     }
 }
@@ -242,8 +253,10 @@ impl MailClient for ImapMailClient {
     async fn fetch_body(&mut self, folder: &str, uid: u32) -> Result<ParsedMail> {
         self.select(folder).await?;
         let raw = retried!(self, session, {
+            // BODY.PEEK[] : RFC 3501 §6.4.5 — un FETCH RFC822 implicite poserait
+            // \Seen ; PEEK lit sans poser aucun flag (décision spec : SEEN jamais modifié).
             let stream = session
-                .uid_fetch(uid.to_string(), "RFC822")
+                .uid_fetch(uid.to_string(), "BODY.PEEK[]")
                 .await
                 .map_err(|e| Error::Imap(e.to_string()))?;
             let fetches: Vec<_> = stream
