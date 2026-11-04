@@ -43,8 +43,12 @@ jobs:
           build-mode: ${{ matrix.build-mode }}
           # security-extended : requetes orientees securite (secrets, TLS, etc.)
           queries: security-extended
-          # fichier de config dedie : paths-ignore tests/ (fixtures factices)
-          config: .github/codeql/codeql-config.yml
+          # Chemin du fichier de config (entree config-file, PAS config :
+          # l'entree config attend une chaine YAML inline et prend le pas
+          # sur config-file, ce qui provoquait l'erreur
+          # "Cannot create property 'queries' on string '...'" ).
+          # paths-ignore tests/ : fixtures avec identifiants factices.
+          config-file: .github/codeql/codeql-config.yml
 
       # Prerequis runner pour l'extraction Rust : rustup + cargo
       - uses: dtolnay/rust-toolchain@stable
