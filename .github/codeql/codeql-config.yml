@@ -1,0 +1,8 @@
+name: Configuration CodeQL Email Zero
+
+# Les fixtures de test contiennent légitimement des identifiants factices
+# (faux mots de passe contre des mini-serveurs loopback) : on les exclut
+# de l'analyse pour éviter les faux positifs « Hard-coded credential ».
+# Contrepartie acceptée : le code de test n'est pas scanné (issue #11).
+paths-ignore:
+  - tests
