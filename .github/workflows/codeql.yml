@@ -6,12 +6,17 @@ on:
   pull_request:
   schedule:
     # scan hebdomadaire (dimanche 06:00 UTC) sur la branche par defaut
-    - cron: "0 6 * * 0"
+    - cron: "0 6 * * * 0"
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
     permissions:
+      # Cause racine des 10 echecs precedents : un bloc permissions au niveau
+      # job REMPLACE toutes les permissions du workflow. security-events seul
+      # laissait le token sans lecture -> actions/checkout echouait des la
+      # premiere etape sur ce depot prive.
+      contents: read
       security-events: write
 
     strategy:
