@@ -12,10 +12,9 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     permissions:
-      # Cause racine des 10 echecs precedents : un bloc permissions au niveau
-      # job REMPLACE toutes les permissions du workflow. security-events seul
-      # laissait le token sans lecture -> actions/checkout echouait des la
-      # premiere etape sur ce depot prive.
+      # permissions explicites minimales : lecture pour checkout, ecriture
+      # des resultats SARIF. Un bloc permissions au niveau job remplace
+      # toutes celles du workflow.
       contents: read
       security-events: write
 
@@ -27,7 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: github/codeql-action/init@v3
+      # codeql-action v4 : v3 est deprecare (decembre 2026) ; la documentation
+      # du setup avance Rust (build-mode none) est documentee sur v4.
+      - uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           # security-extended : requetes orientees securite (secrets, TLS, etc.)
@@ -44,6 +45,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{ matrix.language }}"
