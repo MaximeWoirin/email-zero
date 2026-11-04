@@ -6,7 +6,8 @@ on:
   pull_request:
   schedule:
     # scan hebdomadaire (dimanche 06:00 UTC) sur la branche par defaut
-    - cron: "0 6 * * * 0"
+    # (cron GitHub : 5 champs, pas de champ secondes)
+    - cron: "0 6 * * 0"
 
 jobs:
   analyze:
