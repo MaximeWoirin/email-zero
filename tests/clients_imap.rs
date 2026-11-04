@@ -137,7 +137,7 @@ async fn connect_client(port: u16) -> ImapMailClient {
         username: "bob@example.com".into(),
         password_env: None,
         password_cmd: None,
-        password_plain: Some("jeton-de-test".into()),
+        password_plain: Some("secret".into()),
         tls: false,
         poll_interval_secs: 300,
     };
