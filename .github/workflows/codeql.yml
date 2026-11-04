@@ -21,7 +21,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: rust
+        # Forme officielle CodeQL : la matrice doit etre une liste
+        # (include). Une valeur scalaire 'language: rust' est rejetee
+        # par le validateur de workflows GitHub :
+        # "Unexpected value 'rust'" -> le workflow ne demarre jamais.
+        include:
+          - language: rust
+            # Rust : seul mode de build supporte par CodeQL. Extraction
+            # via rust-analyzer (build.rs, macros), sans build complet.
+            build-mode: none
 
     steps:
       - uses: actions/checkout@v7
@@ -31,14 +39,11 @@ jobs:
       - uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
           # security-extended : requetes orientees securite (secrets, TLS, etc.)
           queries: security-extended
           # fichier de config dedie : paths-ignore tests/ (fixtures factices)
           config: .github/codeql/codeql-config.yml
-          # Rust : seul mode de build supporte par CodeQL. Extraction via
-          # rust-analyzer (build.rs, macros), sans build complet. L'etape
-          # autobuild est reservee aux langages a build et doit rester absente.
-          build-mode: none
 
       # Prerequis runner pour l'extraction Rust : rustup + cargo
       - uses: dtolnay/rust-toolchain@stable
