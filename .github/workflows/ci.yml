@@ -25,3 +25,49 @@ jobs:
 
       - name: cargo test
         run: cargo test
+
+  # Etage de conformite RFC (issue #17) : le vrai client IMAP contre un vrai
+  # serveur Dovecot, en conteneur, publie sur le loopback uniquement. Aucun
+  # secret reel (compte factice), aucune ecriture hors du conteneur jetable :
+  # les fixtures maildir sont copiees dans /tmp avant le montage.
+  imap-dovecot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Demarrer Dovecot (loopback, fixtures maildir)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ez-dovecot-mail
+          cp -r tests/fixtures/maildir/. /tmp/ez-dovecot-mail/
+          chmod -R a+rwX /tmp/ez-dovecot-mail
+          docker run -d --name ez-dovecot \
+            -p 127.0.0.1:1143:143 \
+            -v "$PWD/tests/dovecot/dovecot.conf:/etc/dovecot/dovecot.conf:ro" \
+            -v /tmp/ez-dovecot-mail:/mail \
+            dovecot/dovecot:2.3
+          for i in $(seq 1 30); do
+            if (exec 3<>/dev/tcp/127.0.0.1/1143) 2>/dev/null; then
+              exec 3>&- 3<&-
+              break
+            fi
+            sleep 1
+          done
+          docker exec ez-dovecot doveadm auth test testuser@example.test secret
+          docker exec ez-dovecot doveadm user testuser@example.test
+
+      - name: Tests du client reel contre Dovecot
+        env:
+          EZ_TEST_IMAP_HOST: 127.0.0.1
+          EZ_TEST_IMAP_PORT: "1143"
+          EZ_TEST_IMAP_USER: testuser@example.test
+          EZ_TEST_IMAP_PASSWORD: secret
+        run: cargo test --test imap_dovecot -- --ignored --test-threads=1
+
+      - name: Logs Dovecot (si echec)
+        if: failure()
+        run: docker logs ez-dovecot

@@ -40,10 +40,11 @@ pub trait LlmClient {
 }
 ```
 
-**Trois niveaux de tests** :
+**Quatre niveaux de tests** :
 1. **Unitaires** (rapides, par fonction) : parsing config, logique UIDVALIDITY, validation whitelist, seuil de confiance.
 2. **Intégration** (le cœur, ce qu'on cherche) : le pipeline complet — fake IMAP rempli de mails, fake LLM avec des réponses scriptées, assertions sur les actions produites et le contenu du state store. Zéro réseau.
-3. **Smoke réel** (hors CI, manuel) : `--dry-run` contre les vraies boîtes Orange et Proton. Jamais d'écriture en CI, jamais de secret dans les tests.
+3. **Conformité RFC (CI, boucle locale)** : le vrai client IMAP contre un vrai serveur — conteneur Dovecot sur le loopback, compte factice, fixtures maildir committées (`tests/fixtures/maildir/`, `tests/imap_dovecot.rs` en `#[ignore]`, job CI `imap-dovecot`, issue #17). attrape en CI les divergences fake/serveur réel (ex. #16) avant le smoke.
+4. **Smoke réel** (hors CI, manuel) : `--dry-run` contre les vraies boîtes Orange et Proton. Jamais d'écriture en CI, jamais de secret dans les tests.
 
 **Chaque test est nommé d'après une décision de la spec** : `test_erreurs`, `confidence_sous_seuil_reste_dans_inbox`, `uidvalidity_change_retraite_le_dossier`, etc. La spec est la source des tests.
 
@@ -175,6 +176,7 @@ Chaque jalon ne démarre que le précédent est vert (CI inclus). Les jalons 4 e
 
 ## Risques suivis
 
+- **Divergence fake/serveur réel IMAP** : le mini-serveur `tests/clients_imap.rs` peut valider ce que le code attend au lieu de ce qu'un serveur réel répond (arrivé avec #16 : `BODY[]` répondant à toute requête FETCH) → étage CI `imap-dovecot` (client réel contre Dovecot en conteneur, loopback, #17) ; le smoke réel reste l'arbitre final.
 - **async-imap + Bridge** : comportements IMAP spécifiques de Bridge (UIDVALIDITY qui bouge ?) → découvert au smoke, jalon 8, avec les logs de diagnostic prévus.
 - **RAM du Pi** : mesurée au jalon 8 ; si ça coince avec Bridge, repli VPS sans changement de code.
 - **Qualité LLM des profils de dossiers** : si le tri est douteux en smoke, itérer sur le prompt (le prompt est un artefact versionné, pas du code).

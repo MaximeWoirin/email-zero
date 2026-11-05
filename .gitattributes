@@ -1,0 +1,2 @@
+# Fixtures maildir : messages RFC 5322 en CRLF, quel que soit l'OS de checkout.
+tests/fixtures/maildir/** text eol=crlf

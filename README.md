@@ -47,6 +47,14 @@ réassociation par nom de dossier) → description + exemples en cache, historiq
 description / `error`). Tests d'intégration zéro réseau externe (fakes + mini-serveurs
 loopback), dont un e2e `poll_mailbox` avec `discover=true`.
 
+Etage de conformite RFC en CI (`imap-dovecot`, issue #17) : le vrai client IMAP
+(`src/clients/imap.rs`) est teste contre un conteneur Dovecot reel, publie sur le
+loopback uniquement, avec les fixtures maildir committes (`tests/fixtures/maildir/`,
+config `tests/dovecot/dovecot.conf`, suite `#[ignore]` dans `tests/imap_dovecot.rs`).
+Objectif : attraper en CI les divergences fake/serveur reel (ex. #16,
+`BODY.PEEK[HEADER]` -> `BODY[HEADER]`, `\Seen` jamais pose, COPY/MOVE/UIDVALIDITY)
+avant le smoke reel.
+
 Jalon 3 en cours : conteneur + déploiement POC. `Dockerfile` multi-stage
 (cross-compile `aarch64-unknown-linux-gnu` pour le Pi 3 B+ depuis n'importe quel
 hôte, runtime `debian:bookworm-slim` avec user non-root), `docker-compose.yml`
@@ -62,7 +70,9 @@ réel en `copy` avant de passer à `move`.
 ```sh
 cp config.example.toml config.toml   # puis renseigner les noms de variables d'env
 cargo run -- --config config.toml --dry-run --once
-cargo test
+cargo test                             # unitaires + integration, zero reseau externe
+# etage conformite RFC (client reel contre Dovecot, job CI `imap-dovecot`) :
+cargo test --test imap_dovecot -- --ignored
 ```
 
 ## Déployer (POC conteneur, cible Pi 3 B+ arm64)
