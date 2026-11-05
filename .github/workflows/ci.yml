@@ -45,18 +45,26 @@ jobs:
           mkdir -p /tmp/ez-dovecot-mail
           cp -r tests/fixtures/maildir/. /tmp/ez-dovecot-mail/
           chmod -R a+rwX /tmp/ez-dovecot-mail
+          # Image epinglee sur un tag precis (dernier 2.3.x publie) et non sur
+          # le tag flottant 2.3 : le comportement du job ne change que via ce depot.
           docker run -d --name ez-dovecot \
             -p 127.0.0.1:1143:143 \
             -v "$PWD/tests/dovecot/dovecot.conf:/etc/dovecot/dovecot.conf:ro" \
             -v /tmp/ez-dovecot-mail:/mail \
-            dovecot/dovecot:2.3
+            dovecot/dovecot:2.3.21.1
           for i in $(seq 1 30); do
             if (exec 3<>/dev/tcp/127.0.0.1/1143) 2>/dev/null; then
-              exec 3>&- 3<&-
               break
             fi
             sleep 1
           done
+          # Garde d'echec explicite : si Dovecot n'ecoute jamais, le diagnostic
+          # tombe ici avec les logs, pas plus tard au doveadm suivant.
+          if ! (exec 3<>/dev/tcp/127.0.0.1/1143) 2>/dev/null; then
+            echo "Dovecot n'ecoute pas sur 127.0.0.1:1143 apres 30s" >&2
+            docker logs ez-dovecot >&2 || true
+            exit 1
+          fi
           docker exec ez-dovecot doveadm auth test testuser@example.test secret
           docker exec ez-dovecot doveadm user testuser@example.test
 
