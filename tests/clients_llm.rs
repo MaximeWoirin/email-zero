@@ -12,13 +12,18 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 #[derive(Debug, Deserialize, PartialEq)]
+struct Candidate {
+    category: String,
+    confidence: f32,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
 struct Verdict {
     uid: u64,
-    category: String,
     priority: i64,
     summary: String,
     is_newsletter: bool,
-    confidence: f32,
+    candidates: Vec<Candidate>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -161,7 +166,7 @@ fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
 
 #[tokio::test]
 async fn chat_json_schema_envoie_le_bon_payload_et_deserialise() {
-    let content = r#"{"verdicts":[{"uid":1,"category":"Factures","priority":2,"summary":"resume","is_newsletter":false,"confidence":0.95}]}"#;
+    let content = r#"{"verdicts":[{"uid":1,"priority":2,"summary":"resume","is_newsletter":false,"candidates":[{"category":"Factures","confidence":0.95},{"category":"Newsletters","confidence":0.4}]}]}"#;
     let (base, recorded, counter) = spawn_llm_server(vec![200], content.to_string()).await;
     let cfg = llm_cfg(&base, 3);
     let client = OpenAiLlmClient::new(&cfg, &|name| {
@@ -174,7 +179,9 @@ async fn chat_json_schema_envoie_le_bon_payload_et_deserialise() {
 
     assert_eq!(batch.verdicts.len(), 1);
     assert_eq!(batch.verdicts[0].uid, 1);
-    assert_eq!(batch.verdicts[0].category, "Factures");
+    assert_eq!(batch.verdicts[0].candidates.len(), 2);
+    assert_eq!(batch.verdicts[0].candidates[0].category, "Factures");
+    assert!((batch.verdicts[0].candidates[0].confidence - 0.95).abs() < 1e-6);
     assert_eq!(counter.load(Ordering::SeqCst), 1);
     let rec = &recorded.lock().unwrap()[0];
     assert_eq!(rec.authorization, "Bearer cle-secrete-test");

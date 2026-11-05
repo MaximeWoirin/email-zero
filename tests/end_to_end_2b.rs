@@ -179,7 +179,7 @@ path = ":memory:"
 #[tokio::test]
 async fn end_to_end_client_imap_reel_client_llm_reel_pipeline_complet() {
     let (imap_port, imap_log) = spawn_fake_imap().await;
-    let verdict = r#"{"verdicts":[{"uid":1,"category":"Factures","priority":1,"summary":"Facture EDF octobre","is_newsletter":false,"confidence":0.97}]}"#;
+    let verdict = r#"{"verdicts":[{"uid":1,"priority":1,"summary":"Facture EDF octobre","is_newsletter":false,"candidates":[{"category":"Factures","confidence":0.97}]}]}"#;
     let (llm_base, llm_calls) = spawn_fake_llm(verdict.to_string()).await;
 
     let dir = std::env::temp_dir().join(format!(

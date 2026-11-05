@@ -1,5 +1,5 @@
 use email_zero::store::{Store, TriageRecord};
-use email_zero::triage::{TriageAction, TriageDecision};
+use email_zero::triage::{RoutingRule, TriageAction, TriageDecision};
 
 fn open_store() -> Store {
     Store::open_in_memory().expect("store in-memory")
@@ -35,6 +35,7 @@ fn decision(target: Option<&str>, action: TriageAction) -> TriageDecision {
         is_newsletter: false,
         confidence: 0.9,
         action,
+        rule: RoutingRule::MeilleurCandidat,
     }
 }
 

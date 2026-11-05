@@ -1,11 +1,43 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
 
 use email_zero::error::{Error, Result};
 use email_zero::pipeline::{run, PipelineConfig, RunStats, BATCH_SCHEMA};
 use email_zero::ports::{Folder, JsonChatRequest, LlmClient, MailClient, MailHeader, ParsedMail};
 use email_zero::store::{FolderProfile, Store};
 use serde::de::DeserializeOwned;
+
+/// Capture les logs tracing emis pendant un test (thread-local via set_default).
+#[derive(Clone, Default)]
+struct LogCapture {
+    buf: Arc<Mutex<Vec<u8>>>,
+}
+
+impl std::io::Write for LogCapture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buf.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl LogCapture {
+    fn install(&self) -> tracing::subscriber::DefaultGuard {
+        let writer = self.clone();
+        let sub = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::set_default(sub)
+    }
+
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.buf.lock().unwrap()).into_owned()
+    }
+}
 
 struct FakeMail {
     uidvalidity: HashMap<String, u32>,
@@ -125,14 +157,18 @@ impl LlmClient for FakeLlm {
     }
 }
 
-fn verdict(uid: u64, category: &str, confidence: f32) -> serde_json::Value {
+/// Contrat v2 : un verdict = attributs du mail + liste ordonnee de candidats.
+fn candidate(category: &str, confidence: f32) -> serde_json::Value {
+    serde_json::json!({ "category": category, "confidence": confidence })
+}
+
+fn verdict(uid: u64, candidates: &[serde_json::Value]) -> serde_json::Value {
     serde_json::json!({
         "uid": uid,
-        "category": category,
         "priority": 2,
         "summary": format!("resume uid {uid}"),
-        "is_newsletter": category == "Newsletters",
-        "confidence": confidence,
+        "is_newsletter": false,
+        "candidates": candidates,
     })
 }
 
@@ -201,9 +237,9 @@ async fn pipeline_complet_fake_imap_fake_llm() {
     mail.add_mail(2, "news@shop.fr", "Promo de la semaine", "-50% sur tout");
     mail.add_mail(3, "arnaque@x.io", "Vous avez gagne", "cliquez ici");
     let llm = FakeLlm::new(vec![batch(vec![
-        verdict(1, "Factures", 0.95),
-        verdict(2, "Newsletters", 0.9),
-        verdict(3, "DossierInvente", 0.99),
+        verdict(1, &[candidate("Factures", 0.95)]),
+        verdict(2, &[candidate("Newsletters", 0.9)]),
+        verdict(3, &[candidate("DossierInvente", 0.99)]),
     ])]);
 
     let stats: RunStats = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
@@ -243,7 +279,7 @@ async fn confidence_sous_seuil_reste_dans_inbox_sans_action() {
     let (mut store, cfg) = setup();
     let mut mail = FakeMail::new(1);
     mail.add_mail(5, "a@b.fr", "sujet", "corps");
-    let llm = FakeLlm::new(vec![batch(vec![verdict(5, "Factures", 0.5)])]);
+    let llm = FakeLlm::new(vec![batch(vec![verdict(5, &[candidate("Factures", 0.5)])])]);
 
     let stats = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
         .await
@@ -266,7 +302,10 @@ async fn dry_run_ne_touche_pas_au_serveur_mais_trace_la_decision() {
     cfg.dry_run = true;
     let mut mail = FakeMail::new(1);
     mail.add_mail(1, "edf@edf.fr", "Facture", "corps");
-    let llm = FakeLlm::new(vec![batch(vec![verdict(1, "Factures", 0.95)])]);
+    let llm = FakeLlm::new(vec![batch(vec![verdict(
+        1,
+        &[candidate("Factures", 0.95)],
+    )])]);
 
     let stats = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
         .await
@@ -290,7 +329,10 @@ async fn action_move_appelle_move_pas_copy() {
     cfg.action = "move".into();
     let mut mail = FakeMail::new(1);
     mail.add_mail(1, "edf@edf.fr", "Facture", "corps");
-    let llm = FakeLlm::new(vec![batch(vec![verdict(1, "Factures", 0.95)])]);
+    let llm = FakeLlm::new(vec![batch(vec![verdict(
+        1,
+        &[candidate("Factures", 0.95)],
+    )])]);
 
     let stats = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
         .await
@@ -308,7 +350,10 @@ async fn uid_deja_traite_est_ignore_au_poll_suivant() {
     let mut mail = FakeMail::new(7);
     mail.add_mail(1, "edf@edf.fr", "Facture", "corps");
     mail.add_mail(2, "news@shop.fr", "Promo", "corps");
-    let llm = FakeLlm::new(vec![batch(vec![verdict(2, "Newsletters", 0.9)])]);
+    let llm = FakeLlm::new(vec![batch(vec![verdict(
+        2,
+        &[candidate("Newsletters", 0.9)],
+    )])]);
 
     let stats = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
         .await
@@ -329,7 +374,10 @@ async fn uidvalidity_change_retraite_le_dossier() {
     store.mark_processed("orange", "INBOX", 1, 1).unwrap();
     let mut mail = FakeMail::new(2);
     mail.add_mail(1, "edf@edf.fr", "Facture", "corps");
-    let llm = FakeLlm::new(vec![batch(vec![verdict(1, "Factures", 0.95)])]);
+    let llm = FakeLlm::new(vec![batch(vec![verdict(
+        1,
+        &[candidate("Factures", 0.95)],
+    )])]);
 
     let stats = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
         .await
@@ -350,10 +398,10 @@ async fn batch_size_decoupe_les_appels_llm() {
     }
     let llm = FakeLlm::new(vec![
         batch(vec![
-            verdict(1, "Factures", 0.9),
-            verdict(2, "Newsletters", 0.9),
+            verdict(1, &[candidate("Factures", 0.9)]),
+            verdict(2, &[candidate("Newsletters", 0.9)]),
         ]),
-        batch(vec![verdict(3, "Factures", 0.9)]),
+        batch(vec![verdict(3, &[candidate("Factures", 0.9)])]),
     ]);
 
     let stats = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
@@ -363,7 +411,7 @@ async fn batch_size_decoupe_les_appels_llm() {
     assert_eq!(stats.decided, 3);
     assert_eq!(llm.requests.borrow().len(), 2);
     assert_eq!(llm.schemas.borrow().len(), 2);
-    assert!(llm.schemas.borrow()[0].contains("verdicts"));
+    assert!(llm.schemas.borrow()[0].contains("candidates"));
     assert_eq!(BATCH_SCHEMA, llm.schemas.borrow()[0].as_str());
 }
 
@@ -382,24 +430,181 @@ async fn aucun_mail_non_traite_ne_appelle_pas_le_llm() {
     assert!(llm.requests.borrow().is_empty());
 }
 
+// ---- Contrat de triage v2 (issue #21) : validation de la reponse LLM + logs ----
+
 #[tokio::test]
-async fn uid_sans_verdict_fait_echouer_le_batch_sans_rien_marquer() {
+async fn v2_candidats_multiples_egalite_de_confiance_tri_vers_le_premier() {
+    let (mut store, cfg) = setup();
+    let mut mail = FakeMail::new(1);
+    mail.add_mail(1, "h2r@h2r.fr", "Facture H2R", "corps");
+    let llm = FakeLlm::new(vec![batch(vec![verdict(
+        1,
+        &[candidate("Factures", 0.99), candidate("Newsletters", 0.99)],
+    )])]);
+
+    let stats = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
+        .await
+        .unwrap();
+
+    assert_eq!(stats.copied, 1);
+    assert_eq!(
+        *mail.copies.borrow(),
+        vec![(1, "Factures".to_string())],
+        "a egalite, le premier candidat de la liste gagne"
+    );
+}
+
+#[tokio::test]
+async fn v2_uid_omis_warn_les_autres_traites_et_le_poll_reussit() {
+    let logs = LogCapture::default();
+    let _guard = logs.install();
     let (mut store, cfg) = setup();
     let mut mail = FakeMail::new(1);
     mail.add_mail(1, "a@b.fr", "s1", "corps");
-    mail.add_mail(2, "b@c.fr", "s2", "corps");
+    mail.add_mail(2, "news@shop.fr", "Promo", "corps");
+    // la reponse LLM omet le uid 1
+    let llm = FakeLlm::new(vec![batch(vec![verdict(
+        2,
+        &[candidate("Newsletters", 0.9)],
+    )])]);
+
+    let stats = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
+        .await
+        .unwrap();
+
+    assert_eq!(stats.decided, 2);
+    assert_eq!(stats.copied, 1);
+    assert_eq!(stats.left_in_inbox, 1);
+    assert_eq!(*mail.copies.borrow(), vec![(2, "Newsletters".to_string())]);
+    // le mail omis est laisse en place mais marque traite : pas de resoumission en boucle
+    assert!(store.is_processed("orange", "INBOX", 1, 1).unwrap());
+    let r1 = store
+        .triage_result("orange", "INBOX", 1, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(r1.target_folder, None);
+    assert_eq!(r1.action, "none");
+    let log = logs.text();
+    assert!(log.contains("WARN"), "log: {log}");
+    assert!(log.contains("pas_de_verdict"), "log: {log}");
+    assert!(log.contains("uid=1"), "log: {log}");
+}
+
+#[tokio::test]
+async fn v2_uid_inconnu_dans_la_reponse_est_ecarte_avec_warn() {
+    let logs = LogCapture::default();
+    let _guard = logs.install();
+    let (mut store, cfg) = setup();
+    let mut mail = FakeMail::new(1);
+    mail.add_mail(1, "a@b.fr", "s1", "corps");
+    // verdict orphelin : le uid 99 n'est pas dans le batch envoye
     let llm = FakeLlm::new(vec![batch(vec![
-        verdict(1, "Factures", 0.9),
-        verdict(99, "Newsletters", 0.9),
+        verdict(1, &[candidate("Factures", 0.9)]),
+        verdict(99, &[candidate("Newsletters", 0.9)]),
     ])]);
 
-    let err = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
+    let stats = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
         .await
-        .unwrap_err();
+        .unwrap();
 
-    assert!(matches!(err, Error::Llm(_)));
-    assert!(!store.is_processed("orange", "INBOX", 1, 1).unwrap());
-    assert!(!store.is_processed("orange", "INBOX", 1, 2).unwrap());
+    assert_eq!(stats.decided, 1);
+    assert_eq!(stats.copied, 1);
+    assert_eq!(*mail.copies.borrow(), vec![(1, "Factures".to_string())]);
+    let log = logs.text();
+    assert!(log.contains("WARN"), "log: {log}");
+    assert!(log.contains("uid_inconnu_ecarte"), "log: {log}");
+    assert!(log.contains("uid=99"), "log: {log}");
+}
+
+#[tokio::test]
+async fn v2_deux_verdicts_pour_un_meme_uid_fusionnent_leurs_candidats() {
+    let logs = LogCapture::default();
+    let _guard = logs.install();
+    let (mut store, cfg) = setup();
+    let mut mail = FakeMail::new(1);
+    mail.add_mail(1, "h2r@h2r.fr", "Facture H2R", "corps");
+    // regression du modele : deux objets verdict pour le meme uid 1
+    let llm = FakeLlm::new(vec![batch(vec![
+        verdict(1, &[candidate("Newsletters", 0.5)]),
+        verdict(1, &[candidate("Factures", 0.9)]),
+    ])]);
+
+    let stats = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
+        .await
+        .unwrap();
+
+    assert_eq!(stats.copied, 1);
+    assert_eq!(
+        *mail.copies.borrow(),
+        vec![(1, "Factures".to_string())],
+        "sans fusion, le premier verdict seul (0.5 < seuil) aurait laisse le mail en INBOX"
+    );
+    let log = logs.text();
+    assert!(log.contains("WARN"), "log: {log}");
+    assert!(log.contains("doublon_fusionne"), "log: {log}");
+    assert!(log.contains("uid=1"), "log: {log}");
+}
+
+#[tokio::test]
+async fn v2_meilleur_candidat_sous_le_seuil_reste_dans_inbox() {
+    let logs = LogCapture::default();
+    let _guard = logs.install();
+    let (mut store, cfg) = setup();
+    let mut mail = FakeMail::new(1);
+    mail.add_mail(1, "a@b.fr", "s1", "corps");
+    let llm = FakeLlm::new(vec![batch(vec![verdict(
+        1,
+        &[candidate("Factures", 0.5), candidate("Newsletters", 0.4)],
+    )])]);
+
+    let stats = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
+        .await
+        .unwrap();
+
+    assert_eq!(stats.left_in_inbox, 1);
+    assert!(mail.copies.borrow().is_empty());
+    let r = store
+        .triage_result("orange", "INBOX", 1, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(r.target_folder, None);
+    assert_eq!(r.action, "none");
+    assert!((r.confidence - 0.5).abs() < 1e-6);
+    let log = logs.text();
+    assert!(log.contains("seuil_non_atteint"), "log: {log}");
+    assert!(log.contains("uid=1"), "log: {log}");
+}
+
+#[tokio::test]
+async fn v2_cas_nominal_candidats_multiples_meilleur_trie_et_log_de_routage() {
+    let logs = LogCapture::default();
+    let _guard = logs.install();
+    let (mut store, cfg) = setup();
+    let mut mail = FakeMail::new(1);
+    mail.add_mail(1, "h2r@h2r.fr", "Facture H2R FV260808527", "corps");
+    let llm = FakeLlm::new(vec![batch(vec![verdict(
+        1,
+        &[candidate("Factures", 0.99), candidate("Newsletters", 0.9)],
+    )])]);
+
+    let stats = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
+        .await
+        .unwrap();
+
+    assert_eq!(stats.copied, 1);
+    assert_eq!(*mail.copies.borrow(), vec![(1, "Factures".to_string())]);
+    let r = store
+        .triage_result("orange", "INBOX", 1, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(r.target_folder.as_deref(), Some("Factures"));
+    assert!((r.confidence - 0.99).abs() < 1e-6);
+    let log = logs.text();
+    assert!(log.contains("INFO"), "log: {log}");
+    assert!(log.contains("meilleur_candidat"), "log: {log}");
+    assert!(log.contains("uid=1"), "log: {log}");
+    assert!(log.contains("Factures"), "log: {log}");
+    assert!(log.contains("nb_candidats=2"), "log: {log}");
 }
 
 #[tokio::test]
@@ -407,7 +612,10 @@ async fn le_prompt_embarque_la_whitelist_les_profils_et_le_system_prompt() {
     let (mut store, cfg) = setup();
     let mut mail = FakeMail::new(1);
     mail.add_mail(1, "edf@edf.fr", "Facture octobre", "corps de la facture");
-    let llm = FakeLlm::new(vec![batch(vec![verdict(1, "Factures", 0.95)])]);
+    let llm = FakeLlm::new(vec![batch(vec![verdict(
+        1,
+        &[candidate("Factures", 0.95)],
+    )])]);
 
     run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
         .await
@@ -441,7 +649,10 @@ async fn le_prompt_borne_les_exemples_par_dossier_a_examples_in_prompt() {
     ];
     let mut mail = FakeMail::new(1);
     mail.add_mail(1, "edf@edf.fr", "Facture octobre", "corps");
-    let llm = FakeLlm::new(vec![batch(vec![verdict(1, "Factures", 0.95)])]);
+    let llm = FakeLlm::new(vec![batch(vec![verdict(
+        1,
+        &[candidate("Factures", 0.95)],
+    )])]);
 
     run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
         .await
@@ -455,26 +666,6 @@ async fn le_prompt_borne_les_exemples_par_dossier_a_examples_in_prompt() {
     );
 }
 
-#[tokio::test]
-async fn verdict_orphelin_seul_fait_echouer_le_batch() {
-    let (mut store, cfg) = setup();
-    let mut mail = FakeMail::new(1);
-    mail.add_mail(1, "a@b.fr", "s1", "corps");
-    let llm = FakeLlm::new(vec![batch(vec![
-        verdict(1, "Factures", 0.9),
-        verdict(99, "Newsletters", 0.9),
-    ])]);
-
-    let err = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
-        .await
-        .unwrap_err();
-
-    assert!(matches!(err, Error::Llm(_)));
-    assert!(err.to_string().contains("orphelin"));
-    assert!(!store.is_processed("orange", "INBOX", 1, 1).unwrap());
-    assert!(mail.copies.borrow().is_empty());
-}
-
 #[test]
 fn corps_long_tronque_au_seuil_avec_marqueur() {
     let (mut store, mut cfg) = setup();
@@ -482,7 +673,7 @@ fn corps_long_tronque_au_seuil_avec_marqueur() {
     let body = "a".repeat(200);
     let mut mail = FakeMail::new(1);
     mail.add_mail(1, "a@b.fr", "s1", &body);
-    let llm = FakeLlm::new(vec![batch(vec![verdict(1, "Factures", 0.9)])]);
+    let llm = FakeLlm::new(vec![batch(vec![verdict(1, &[candidate("Factures", 0.9)])])]);
     let _ = run_tokio(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg);
 
     let user = &llm.requests.borrow()[0].messages[1].content;
@@ -497,7 +688,7 @@ fn corps_court_intact_sans_marqueur() {
     let (mut store, cfg) = setup();
     let mut mail = FakeMail::new(1);
     mail.add_mail(1, "a@b.fr", "s1", "corps court");
-    let llm = FakeLlm::new(vec![batch(vec![verdict(1, "Factures", 0.9)])]);
+    let llm = FakeLlm::new(vec![batch(vec![verdict(1, &[candidate("Factures", 0.9)])])]);
     let _ = run_tokio(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg);
 
     let user = &llm.requests.borrow()[0].messages[1].content;

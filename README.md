@@ -28,8 +28,9 @@ intégration avec fake IMAP + fake LLM scripté (zéro réseau, `tests/pipeline.
 `SEARCH UNSEEN` → dédup via le state store (changement d'`UIDVALIDITY` = retraitement
 du dossier) → batchs LLM en structured output réassociés par `uid` → décision pure
 (whitelist, seuil de confiance) → `copy`/`move` sur le serveur (aucune écriture en
-`--dry-run`) → persistance `processed` + `triage_result`. Le prompt de triage v1 vit
-dans `prompts/triage.md`, le chemin du state store dans `[store].path` du TOML.
+`--dry-run`) → persistance `processed` + `triage_result`. Le prompt de triage v2 vit
+dans `prompts/triage.md` (contrat v2 : liste ordonnée de candidats par mail, validation
+de la réponse LLM, log de routage par mail), le chemin du state store dans `[store].path` du TOML.
 Jalon 2b livré : clients réels IMAP (`async-imap` + rustls, `src/clients/imap.rs`) et LLM
 OpenAI-compatible (`reqwest`, `src/clients/llm.rs`), retry/backoff exponentiel configurés
 (`[imap.retry]`/`[llm.retry]`, `src/retry.rs`) ; `main` connecte chaque boîte et lance
