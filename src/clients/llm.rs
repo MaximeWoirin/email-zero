@@ -1,7 +1,6 @@
-use std::time::Duration;
-
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::time::Duration;
 
 use crate::config::{LlmConfig, RetryConfig};
 use crate::error::{Error, Result};
@@ -74,7 +73,10 @@ pub fn validate_base_url(base_url: &str) -> Result<()> {
             .strip_prefix("http://")
             .and_then(|rest| rest.split(['/', ':']).next())
             .unwrap_or("");
-        if matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]") {
+        if matches!(
+            host,
+            "127.0.0.1" | "localhost" | "::1" | "[::1]" | "host.docker.internal"
+        ) {
             return Ok(());
         }
         return Err(Error::Config(format!(
@@ -133,6 +135,9 @@ impl OpenAiLlmClient {
         let http = self.http.clone();
         let api_key = self.api_key.clone();
         let payload = serde_json::to_value(&body)?;
+        // Debug : corps exact envoye a l'endpoint. Le payload embarque les mails
+        // (sujets + extraits de corps) : a activer uniquement pour diagnostiquer.
+        tracing::debug!(model = %req.model, url = %url, payload = %payload, "requete LLM envoyee");
         let parsed: ChatCompletionResponse = with_retry(
             &self.retry,
             || {
@@ -153,6 +158,9 @@ impl OpenAiLlmClient {
                         .text()
                         .await
                         .map_err(|e| Error::Llm(format!("lecture reponse: {e}")))?;
+                    // Debug : reponse brute (statut + corps) avant parsing. Le corps
+                    // contient les verdicts du modele : a activer uniquement pour diagnostiquer.
+                    tracing::debug!(status = %status, payload = %text, "reponse LLM recue");
                     if !status.is_success() {
                         // 4xx (sauf 429) = erreur client definitive : pas de retry.
                         if status.is_client_error() && status.as_u16() != 429 {
