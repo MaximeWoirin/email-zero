@@ -17,7 +17,10 @@ services:
     volumes:
       - ./config.toml:/config/config.toml:ro
       - ./data:/app/data
-    command: ["--config", "/config/config.toml"]
+    # CMD du Dockerfile suffit (--config /config/config.toml) ; `compose run`
+    # surcharge la commande pour le smoke (--dry-run --once).
+    # depends_on sans healthcheck : tolere — le daemon reconnecte chaque boite
+    # a chaque poll et une boite en echec ne tue pas la boucle (jalon 2b).
     depends_on:
       - bridge
     logging:
