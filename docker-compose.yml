@@ -22,15 +22,20 @@ services:
     # depends_on sans healthcheck : tolere — le daemon reconnecte chaque boite
     # a chaque poll et une boite en echec ne tue pas la boucle (jalon 2b).
     depends_on:
-      - bridge
+      bridge:
+        condition: service_started
+        required: false      # ordre si le profil est actif, ignoré sinon
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-
+        
   bridge:
-    # Pas d'image officielle Proton ; image communautaire multi-arch
+    profiles: ["proton"]      # démarré seulement si le profil est actif    # Pas d'image officielle Proton ; image communautaire multi-arch
     # (amd64 + arm64). Surchargeable : BRIDGE_IMAGE=... docker compose up -d
     image: ${BRIDGE_IMAGE:-ghcr.io/bostrot/protonmail-bridge:build}
     restart: unless-stopped

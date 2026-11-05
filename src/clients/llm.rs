@@ -74,7 +74,7 @@ pub fn validate_base_url(base_url: &str) -> Result<()> {
             .strip_prefix("http://")
             .and_then(|rest| rest.split(['/', ':']).next())
             .unwrap_or("");
-        if matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]") {
+        if matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]" | "host.docker.internal") {
             return Ok(());
         }
         return Err(Error::Config(format!(
