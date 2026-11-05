@@ -1,0 +1,9 @@
+.git
+.github
+docs
+target
+data
+.env
+config.toml
+*.db
+*.sqlite

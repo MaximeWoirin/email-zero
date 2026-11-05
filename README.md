@@ -47,6 +47,16 @@ réassociation par nom de dossier) → description + exemples en cache, historiq
 description / `error`). Tests d'intégration zéro réseau externe (fakes + mini-serveurs
 loopback), dont un e2e `poll_mailbox` avec `discover=true`.
 
+Jalon 3 en cours : conteneur + déploiement POC. `Dockerfile` multi-stage
+(cross-compile `aarch64-unknown-linux-gnu` pour le Pi 3 B+ depuis n'importe quel
+hôte, runtime `debian:bookworm-slim` avec user non-root), `docker-compose.yml`
+de prod (`email-zero` + `bridge` Proton : `config.toml` monté en lecture seule,
+`data/` pour le state store, secrets via `.env` (`env_file`), ports Bridge
+publiés sur le loopback uniquement), CI `Docker` (build image `linux/arm64` +
+smoke `--version` sous QEMU). Reste manuel côté utilisateur : le smoke réel
+`--dry-run --once` sur Orange/Proton, revue des logs JSON, puis premier run
+réel en `copy` avant de passer à `move`.
+
 ## Lancer
 
 ```sh
@@ -54,3 +64,18 @@ cp config.example.toml config.toml   # puis renseigner les noms de variables d'e
 cargo run -- --config config.toml --dry-run --once
 cargo test
 ```
+
+## Déployer (POC conteneur, cible Pi 3 B+ arm64)
+
+```sh
+cp config.example.toml config.toml        # boîte "proton" : host = "bridge", port = 1143, tls = false
+cp .env.example .env && chmod 600 .env    # EZ_ORANGE_PASSWORD, EZ_PROTON_PASSWORD (app password Bridge), EZ_LLM_API_KEY
+install -d -o 10001 -g 10001 data          # propriétaire = user non-root du conteneur
+docker compose run --rm bridge init       # ajouter le compte Proton dans Bridge (interactif)
+docker compose run --rm email-zero --config /config/config.toml --dry-run --once   # smoke : aucune écriture
+docker compose up -d                      # daemon
+docker compose logs -f email-zero         # logs JSON
+```
+
+Build de l'image seule :
+`docker buildx build --platform linux/arm64 -t email-zero:local --load .`

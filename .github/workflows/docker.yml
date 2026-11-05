@@ -1,0 +1,29 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Build de l'image linux/arm64 (le stage builder tourne sur
+      # $BUILDPLATFORM et cross-compile en aarch64) puis smoke : le binaire
+      # arm64 repond a --version sous QEMU.
+      - uses: docker/build-push-action@v6
+        with:
+          platforms: linux/arm64
+          load: true
+          tags: email-zero:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: smoke --version (linux/arm64)
+        run: docker run --rm --platform linux/arm64 email-zero:ci --version

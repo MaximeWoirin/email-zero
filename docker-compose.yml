@@ -1,0 +1,44 @@
+# Deploiement POC : email-zero + Proton Bridge sur la meme machine (Pi 3 B+).
+# Les ports de Bridge ne sont publies que sur le loopback.
+#
+# 1. cp config.example.toml config.toml
+#    (boite "proton" : host = "bridge", port = 1143, tls = false)
+# 2. cp .env.example .env && chmod 600 .env
+# 3. install -d -o 10001 -g 10001 data   # proprietaire = user non-root du conteneur
+# 4. docker compose run --rm bridge init  # ajouter le compte Proton (interactif)
+# 5. docker compose run --rm email-zero --config /config/config.toml --dry-run --once  # smoke
+# 6. docker compose up -d                # daemon
+services:
+  email-zero:
+    build: .
+    image: email-zero:local
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./config.toml:/config/config.toml:ro
+      - ./data:/app/data
+    # CMD du Dockerfile suffit (--config /config/config.toml) ; `compose run`
+    # surcharge la commande pour le smoke (--dry-run --once).
+    # depends_on sans healthcheck : tolere — le daemon reconnecte chaque boite
+    # a chaque poll et une boite en echec ne tue pas la boucle (jalon 2b).
+    depends_on:
+      - bridge
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  bridge:
+    # Pas d'image officielle Proton ; image communautaire multi-arch
+    # (amd64 + arm64). Surchargeable : BRIDGE_IMAGE=... docker compose up -d
+    image: ${BRIDGE_IMAGE:-ghcr.io/bostrot/protonmail-bridge:build}
+    restart: unless-stopped
+    volumes:
+      - bridge-data:/root
+    ports:
+      - "127.0.0.1:1143:143"   # IMAP Bridge
+      - "127.0.0.1:1025:25"    # SMTP Bridge
+
+volumes:
+  bridge-data:
