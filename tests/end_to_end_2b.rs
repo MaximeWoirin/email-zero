@@ -1,3 +1,5 @@
+mod common;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -57,13 +59,8 @@ async fn spawn_fake_imap() -> (u16, Arc<Mutex<ImapLog>>) {
                     match sub {
                         "SEARCH" => format!("* SEARCH 1\r\n{tag} OK SEARCH ok\r\n"),
                         "FETCH" => {
-                            let uid: u32 =
-                                args.split(' ').next().and_then(|s| s.parse().ok()).unwrap_or(0);
-                            let body = MAIL_1.as_bytes();
-                            format!(
-                                "* 1 FETCH (UID {uid} BODY[] {{{}}}\r\n{MAIL_1})\r\n{tag} OK FETCH ok\r\n",
-                                body.len()
-                            )
+                            let (uid, query) = common::split_fetch_args(args);
+                            common::fetch_reply(&tag, uid, query, MAIL_1)
                         }
                         "COPY" => {
                             let mut it = args.splitn(2, ' ');

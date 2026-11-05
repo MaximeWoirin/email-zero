@@ -1,3 +1,5 @@
+mod common;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -89,19 +91,14 @@ async fn spawn_fake_imap() -> (u16, Arc<Mutex<FakeImapState>>) {
                             }
                         }
                         "FETCH" => {
-                            let uid: u32 = args
-                                .split(' ')
-                                .next()
-                                .and_then(|s| s.parse().ok())
-                                .unwrap_or(0);
-                            let query = args.split_once(' ').map(|x| x.1).unwrap_or("").to_string();
-                            state_out.lock().unwrap().fetch_queries.push(query);
+                            let (uid, query) = common::split_fetch_args(args);
+                            state_out
+                                .lock()
+                                .unwrap()
+                                .fetch_queries
+                                .push(query.to_string());
                             let mail = if uid == 1 { MAIL_1 } else { MAIL_2 };
-                            let body = mail.as_bytes();
-                            format!(
-                                "* 1 FETCH (UID {uid} BODY[] {{{}}}\r\n{mail})\r\n{tag} OK FETCH ok\r\n",
-                                body.len()
-                            )
+                            common::fetch_reply(&tag, uid, query, mail)
                         }
                         "COPY" => {
                             let mut it = args.splitn(2, ' ');

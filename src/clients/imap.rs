@@ -281,7 +281,9 @@ impl MailClient for ImapMailClient {
             fetches
                 .into_iter()
                 .find(|f| f.uid == Some(uid))
-                .and_then(|f| f.body().map(|b| b.to_vec()))
+                // RFC 3501 §6.4.5 : la reponse a BODY.PEEK[HEADER] est BODY[HEADER],
+                // lue via header() — body() ne porte que BODY[]/RFC822 et renverrait None.
+                .and_then(|f| f.header().map(|b| b.to_vec()))
                 .ok_or_else(|| {
                     Error::Imap(format!("uid {uid}: en-tete absent de la reponse FETCH"))
                 })
