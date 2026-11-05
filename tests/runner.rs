@@ -5,7 +5,7 @@ use std::sync::Arc;
 use email_zero::clients::imap::BoxSession;
 use email_zero::config::{Config, MailboxConfig};
 use email_zero::error::{Error, Result};
-use email_zero::runner::{daemon_loop, DaemonDeps};
+use email_zero::runner::{daemon_loop, discovery_due, DaemonDeps};
 use email_zero::store::Store;
 
 fn test_config() -> Config {
@@ -81,7 +81,7 @@ async fn daemon_once_ne_fait_qu_un_tour_mais_tente_toutes_les_boites() {
         password_lookup: &pw,
         sleep: &mut sleep,
     };
-    daemon_loop(&cfg, &llm, &mut store, true, false, &mut deps)
+    daemon_loop(&cfg, &llm, &mut store, true, false, false, &mut deps)
         .await
         .unwrap();
 
@@ -118,10 +118,31 @@ async fn daemon_sans_once_reboucle_et_reconnecte_chaque_boite_a_chaque_tour() {
         password_lookup: &pw,
         sleep: &mut sleep,
     };
-    let result = daemon_loop(&cfg, &llm, &mut store, false, false, &mut deps).await;
+    let result = daemon_loop(&cfg, &llm, &mut store, false, false, false, &mut deps).await;
 
     // 3 tours effectues (le 3e stoppe dans le sleep), 2 boites par tour
     assert!(result.is_err(), "sortie par le stop du test");
     assert_eq!(sleeps.load(Ordering::SeqCst), 3);
     assert_eq!(calls.load(Ordering::SeqCst), 3 * 2);
+}
+
+#[test]
+fn discovery_due_sans_run_precedent_oui() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.sync_mailboxes(&["ok".to_string()]).unwrap();
+    assert!(discovery_due(&store, "ok", 86400).unwrap());
+    // boite inconnue du store : due aussi
+    assert!(discovery_due(&store, "jamais", 86400).unwrap());
+}
+
+#[test]
+fn discovery_due_faux_avant_interval_vrai_apres() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.sync_mailboxes(&["ok".to_string()]).unwrap();
+    store.start_discovery_run("ok").unwrap();
+    store.finish_discovery_run("ok", "ok", Some(2)).unwrap();
+    // dernier run a l'instant : pas due avant l'intervalle
+    assert!(!discovery_due(&store, "ok", 86400).unwrap());
+    // intervalle nul : toujours due
+    assert!(discovery_due(&store, "ok", 0).unwrap());
 }

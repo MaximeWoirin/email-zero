@@ -104,6 +104,7 @@ model = "local"
     assert_eq!(cfg.discovery.interval_secs, 86400);
     assert_eq!(cfg.discovery.sample_per_folder, 20);
     assert_eq!(cfg.discovery.examples_in_prompt, 3);
+    assert_eq!(cfg.discovery.prompt_path, "prompts/discovery.md");
     assert_eq!(
         cfg.discovery.exclude_folders,
         vec!["Sent", "Drafts", "Trash", "Junk"]

@@ -47,6 +47,9 @@ pub trait MailClient {
     /// -> le state store retraite tout le dossier (spec : gestion de l'UIDVALIDITY).
     async fn uidvalidity(&mut self, folder: &str) -> Result<u32>;
     async fn search_unseen(&mut self, folder: &str) -> Result<Vec<u32>>;
+    /// Tous les UIDs du dossier (SEARCH ALL), tries : sert a l'echantillonnage
+    /// du job de decouverte (jalon 2c), lus ou non.
+    async fn search_all(&mut self, folder: &str) -> Result<Vec<u32>>;
     async fn fetch_headers(&mut self, folder: &str, uid: u32) -> Result<MailHeader>;
     async fn fetch_body(&mut self, folder: &str, uid: u32) -> Result<ParsedMail>;
     async fn copy(&mut self, folder: &str, uid: u32, target: &str) -> Result<()>;

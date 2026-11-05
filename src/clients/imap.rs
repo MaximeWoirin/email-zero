@@ -252,6 +252,19 @@ impl MailClient for ImapMailClient {
         Ok(uids)
     }
 
+    async fn search_all(&mut self, folder: &str) -> Result<Vec<u32>> {
+        self.select(folder).await?;
+        let set = retried!(self, session, {
+            session
+                .uid_search("ALL")
+                .await
+                .map_err(|e| Error::Imap(e.to_string()))
+        })?;
+        let mut uids: Vec<u32> = set.into_iter().collect();
+        uids.sort_unstable();
+        Ok(uids)
+    }
+
     async fn fetch_headers(&mut self, folder: &str, uid: u32) -> Result<MailHeader> {
         // BODY.PEEK[HEADER] : on ne telecharge que l'en-tete (echantillonnage
         // du jalon 2c), et PEEK ne pose jamais \Seen.

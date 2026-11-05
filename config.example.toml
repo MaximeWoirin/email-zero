@@ -47,10 +47,11 @@ confidence_threshold = 0.8       # sous ce seuil -> le mail reste dans INBOX
 prompt_path = "prompts/triage.md"
 
 [discovery]
-interval_secs = 86400
-sample_per_folder = 20
-examples_in_prompt = 3
-exclude_folders = ["Sent", "Drafts", "Trash", "Junk"]
+interval_secs = 86400            # rafraichissement du profil des dossiers
+sample_per_folder = 20          # headers echantillonnes par dossier (SEARCH ALL)
+examples_in_prompt = 3           # exemples de sujets par dossier dans le prompt de triage
+exclude_folders = ["Sent", "Drafts", "Trash", "Junk"]  # par special-use RFC 6154 ou par nom
+prompt_path = "prompts/discovery.md"   # prompt systeme du profilage LLM
 
 # ---- State store ----
 [store]

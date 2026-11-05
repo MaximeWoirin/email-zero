@@ -35,7 +35,17 @@ OpenAI-compatible (`reqwest`, `src/clients/llm.rs`), retry/backoff exponentiel c
 (`[imap.retry]`/`[llm.retry]`, `src/retry.rs`) ; `main` connecte chaque boîte et lance
 `pipeline::run` sur INBOX (`--once` = un poll puis sortie, sinon poll toutes les
 `poll_interval_secs`). Tests sans réseau externe : mini-serveurs IMAP/HTTP sur loopback.
-Reste au jalon 2c : job de découverte des dossiers.
+Jalon 2c livré : job de découverte des dossiers (`src/discovery.rs`), câblé dans
+le daemon (au premier run ou quand `discovery.interval_secs` est écoulé,
+`--refresh-folders` force) : `LIST` + special-use RFC 6154 → whitelist dans
+`folder` (INBOX et `exclude_folders` exclus, `Archive` conservé), échantillonnage
+des `sample_per_folder` derniers headers par dossier (`SEARCH ALL` +
+`BODY.PEEK[HEADER]`, jamais de `\Seen`), **une seule requête LLM** de profilage
+par boîte (prompt `prompts/discovery.md`, schéma strict `PROFILING_SCHEMA`,
+réassociation par nom de dossier) → description + exemples en cache, historique
+`discovery_run` (`ok` / `fallback` LLM indisponible avec échantillons bruts sans
+description / `error`). Tests d'intégration zéro réseau externe (fakes + mini-serveurs
+loopback), dont un e2e `poll_mailbox` avec `discover=true`.
 
 ## Lancer
 

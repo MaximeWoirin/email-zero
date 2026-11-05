@@ -87,5 +87,14 @@ async fn main() -> Result<()> {
         password_lookup: &password_lookup,
         sleep: &mut sleep,
     };
-    daemon_loop(&cfg, &llm, &mut store, cli.once, cli.dry_run, &mut deps).await
+    daemon_loop(
+        &cfg,
+        &llm,
+        &mut store,
+        cli.once,
+        cli.dry_run,
+        cli.refresh_folders,
+        &mut deps,
+    )
+    .await
 }

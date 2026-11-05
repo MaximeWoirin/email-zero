@@ -195,7 +195,7 @@ fn profile_dossier_mis_en_cache_avec_description_et_exemples() {
         .set_folder_profile(
             "orange",
             "Factures",
-            "factures, recus, impots",
+            Some("factures, recus, impots"),
             &["Re: facture edf".to_string(), "recu amazon".to_string()],
         )
         .unwrap();
