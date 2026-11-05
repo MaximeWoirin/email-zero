@@ -125,6 +125,10 @@ pub struct DiscoveryConfig {
     pub examples_in_prompt: usize,
     #[serde(default = "default_exclude_folders")]
     pub exclude_folders: Vec<String>,
+    /// Prompt systeme du profilage LLM des dossiers (artefact versionne, comme
+    /// `triage.prompt_path`).
+    #[serde(default = "default_discovery_prompt_path")]
+    pub prompt_path: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -269,6 +273,7 @@ impl Default for DiscoveryConfig {
             sample_per_folder: default_sample_per_folder(),
             examples_in_prompt: default_examples_in_prompt(),
             exclude_folders: default_exclude_folders(),
+            prompt_path: default_discovery_prompt_path(),
         }
     }
 }
@@ -339,6 +344,9 @@ fn default_exclude_folders() -> Vec<String> {
         .iter()
         .map(|s| s.to_string())
         .collect()
+}
+fn default_discovery_prompt_path() -> String {
+    "prompts/discovery.md".into()
 }
 fn default_store_path() -> String {
     "data/email-zero.sqlite".into()

@@ -1,4 +1,4 @@
-use email_zero::store::iso8601_utc;
+use email_zero::store::{iso8601_utc, parse_iso8601_utc};
 
 // Valeurs de reference verifiees avec `date -u -d @<secs>` (GNU coreutils),
 // pas avec l'implementation testee.
@@ -43,6 +43,49 @@ fn limites_32_bits_et_annee_9999() {
     assert_eq!(iso8601_utc(2147483647), "2038-01-19T03:14:07Z");
     assert_eq!(iso8601_utc(4102444800), "2100-01-01T00:00:00Z");
     assert_eq!(iso8601_utc(253402300799), "9999-12-31T23:59:59Z");
+}
+
+#[test]
+fn parse_iso8601_est_l_inverse_de_iso8601_sur_les_dates_de_reference() {
+    // memes valeurs de reference que ci-dessus (verifiees avec GNU date)
+    for secs in [
+        0u64,
+        1,
+        946684799,
+        946684800,
+        951782400,
+        951868800,
+        4107456000,
+        4107542400,
+        1709210096,
+        1798761599,
+        1798761600,
+        2147483647,
+        4102444800,
+        253402300799,
+    ] {
+        assert_eq!(
+            parse_iso8601_utc(&iso8601_utc(secs)),
+            Some(secs),
+            "roundtrip pour {secs}"
+        );
+    }
+}
+
+#[test]
+fn parse_iso8601_rejette_les_formats_casses() {
+    assert_eq!(parse_iso8601_utc(""), None);
+    assert_eq!(parse_iso8601_utc("1970-01-01T00:00:00"), None, "pas de Z");
+    assert_eq!(parse_iso8601_utc("1970-01-01 00:00:00Z"), None, "pas de T");
+    assert_eq!(parse_iso8601_utc("1970-13-01T00:00:00Z"), None, "mois 13");
+    assert_eq!(parse_iso8601_utc("1970-01-32T00:00:00Z"), None, "jour 32");
+    assert_eq!(parse_iso8601_utc("1970-01-01T25:00:00Z"), None, "heure 25");
+    assert_eq!(
+        parse_iso8601_utc("aaaa-01-01T00:00:00Z"),
+        None,
+        "non numerique"
+    );
+    assert_eq!(parse_iso8601_utc("1970-01-01T00:00:00Z "), None, "longueur");
 }
 
 #[test]

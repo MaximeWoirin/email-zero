@@ -63,6 +63,9 @@ pub struct PipelineConfig {
     pub batch_size: usize,
     /// Borne du corps injecte dans le prompt (issue #7) ; 0 = aucune troncature.
     pub max_body_chars: usize,
+    /// Nombre max d'exemples de sujets affiches par dossier dans le prompt
+    /// (`[discovery] examples_in_prompt`) : le prompt reste compact et stable.
+    pub examples_in_prompt: usize,
     pub dry_run: bool,
     pub system_prompt: String,
     pub model: String,
@@ -106,6 +109,7 @@ pub fn pipeline_config_for(
         action: cfg.triage.action.clone(),
         batch_size: cfg.llm.batch_size,
         max_body_chars: cfg.llm.max_body_chars,
+        examples_in_prompt: cfg.discovery.examples_in_prompt,
         dry_run,
         system_prompt,
         model: cfg.llm.model.clone(),
@@ -134,16 +138,22 @@ pub fn build_user_prompt(
     whitelist: &[String],
     mails: &[(u32, ParsedMail)],
     max_body_chars: usize,
+    examples_in_prompt: usize,
 ) -> String {
     let mut out = String::from("Dossiers disponibles (whitelist stricte) :\n");
     for name in whitelist {
         match profiles.iter().find(|p| &p.name == name) {
             Some(p) => {
                 let desc = p.description.as_deref().unwrap_or("description inconnue");
-                let examples = if p.examples.is_empty() {
+                let shown = if examples_in_prompt == 0 {
+                    p.examples.len()
+                } else {
+                    p.examples.len().min(examples_in_prompt)
+                };
+                let examples = if shown == 0 {
                     "aucun exemple".to_string()
                 } else {
-                    p.examples
+                    p.examples[..shown]
                         .iter()
                         .map(|e| format!("\"{e}\""))
                         .collect::<Vec<_>>()
@@ -211,6 +221,7 @@ pub async fn run<M: MailClient, L: LlmClient>(
                         &cfg.whitelist,
                         &mails,
                         cfg.max_body_chars,
+                        cfg.examples_in_prompt,
                     ),
                 },
             ],

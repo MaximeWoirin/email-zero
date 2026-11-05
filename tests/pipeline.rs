@@ -54,6 +54,16 @@ impl MailClient for FakeMail {
     async fn search_unseen(&mut self, folder: &str) -> Result<Vec<u32>> {
         Ok(self.unseen.get(folder).cloned().unwrap_or_default())
     }
+    async fn search_all(&mut self, folder: &str) -> Result<Vec<u32>> {
+        let mut uids: Vec<u32> = self
+            .mails
+            .keys()
+            .filter(|(f, _)| f == folder)
+            .map(|(_, u)| *u)
+            .collect();
+        uids.sort_unstable();
+        Ok(uids)
+    }
     async fn fetch_headers(&mut self, folder: &str, uid: u32) -> Result<MailHeader> {
         Ok(self
             .mails
@@ -143,7 +153,7 @@ fn setup() -> (Store, PipelineConfig) {
         .set_folder_profile(
             "orange",
             "Factures",
-            "factures et justificatifs",
+            Some("factures et justificatifs"),
             &["Facture EDF octobre".to_string()],
         )
         .unwrap();
@@ -167,6 +177,7 @@ fn setup() -> (Store, PipelineConfig) {
         action: "copy".into(),
         batch_size: 15,
         max_body_chars: 2000,
+        examples_in_prompt: 3,
         dry_run: false,
         system_prompt: "PROMPT SYSTEME DE TEST".into(),
         model: "modele-test".into(),
@@ -415,6 +426,33 @@ async fn le_prompt_embarque_la_whitelist_les_profils_et_le_system_prompt() {
     assert!(user.contains("edf@edf.fr"));
     assert!(user.contains("Facture octobre"));
     assert!(user.contains("corps de la facture"));
+}
+
+#[tokio::test]
+async fn le_prompt_borne_les_exemples_par_dossier_a_examples_in_prompt() {
+    let (mut store, mut cfg) = setup();
+    cfg.examples_in_prompt = 2;
+    cfg.profiles[0].examples = vec![
+        "ex-1".into(),
+        "ex-2".into(),
+        "ex-3".into(),
+        "ex-4".into(),
+        "ex-5".into(),
+    ];
+    let mut mail = FakeMail::new(1);
+    mail.add_mail(1, "edf@edf.fr", "Facture octobre", "corps");
+    let llm = FakeLlm::new(vec![batch(vec![verdict(1, "Factures", 0.95)])]);
+
+    run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
+        .await
+        .unwrap();
+
+    let user = &llm.requests.borrow()[0].messages[1].content;
+    assert!(user.contains("ex-1") && user.contains("ex-2"));
+    assert!(
+        !user.contains("ex-3") && !user.contains("ex-4") && !user.contains("ex-5"),
+        "exemples bornes a examples_in_prompt=2: {user}"
+    );
 }
 
 #[tokio::test]

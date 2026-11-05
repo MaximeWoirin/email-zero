@@ -98,12 +98,16 @@ pub struct DiscoveryRun {
     pub folders_profiled: Option<i64>,
 }
 
-fn now_iso8601_utc() -> String {
-    let secs = SystemTime::now()
+/// Secondes since epoch (UTC) maintenant.
+pub fn now_secs() -> u64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0);
-    iso8601_utc(secs)
+        .unwrap_or(0)
+}
+
+fn now_iso8601_utc() -> String {
+    iso8601_utc(now_secs())
 }
 
 /// Cree le repertoire parent du fichier SQLite s'il n'existe pas (ex: data/).
@@ -139,6 +143,41 @@ pub fn iso8601_utc(secs: u64) -> String {
         (tod / 60) % 60,
         tod % 60
     )
+}
+
+/// Inverse de `iso8601_utc` : parse "YYYY-MM-DDTHH:MM:SSZ" -> secondes since epoch.
+/// Algorithme civil->jours de Howard Hinnant (miroir de `iso8601_utc`) ;
+/// roundtrip teste dans tests/timestamps.rs. Retourne None si le format est cassé.
+pub fn parse_iso8601_utc(s: &str) -> Option<u64> {
+    let b = s.as_bytes();
+    if b.len() != 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+        || b[19] != b'Z'
+    {
+        return None;
+    }
+    let num = |i: usize, n: usize| -> Option<i64> { s.get(i..i + n)?.parse().ok() };
+    let y = num(0, 4)?;
+    let m = num(5, 2)?;
+    let d = num(8, 2)?;
+    let hh = num(11, 2)?;
+    let mi = num(14, 2)?;
+    let ss = num(17, 2)?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || hh > 23 || mi > 59 || ss > 60 {
+        return None;
+    }
+    let y_adj = if m <= 2 { y - 1 } else { y };
+    let era = if y_adj >= 0 { y_adj } else { y_adj - 399 } / 400;
+    let yoe = y_adj - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + hh * 3600 + mi * 60 + ss).ok()
 }
 
 impl Store {
@@ -231,6 +270,9 @@ impl Store {
     }
 
     /// (name, description, excluded) — excluded=1 -> hors whitelist (Sent, Trash...).
+    /// La description n'est PAS touchee par le DO UPDATE (revue PR #13) : elle
+    /// n'appartient qu'a `set_folder_profile`, pour qu'un run de decouverte qui
+    /// echoue mi-parcours ne fasse pas perdre les descriptions du run precedent.
     pub fn upsert_folders(
         &mut self,
         mailbox: &str,
@@ -242,7 +284,6 @@ impl Store {
                 "INSERT INTO folder (mailbox_id, name, description, \"excluded\", updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT (mailbox_id, name) DO UPDATE SET
-                   description=excluded.description,
                    \"excluded\"=excluded.\"excluded\",
                    updated_at=excluded.updated_at",
                 params![mailbox, name, description, *excluded as i64, now],
@@ -259,11 +300,13 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// `description = None` = fallback decouverte (LLM indisponible) :
+    /// echantillons bruts gardes sans description semantique.
     pub fn set_folder_profile(
         &mut self,
         mailbox: &str,
         folder: &str,
-        description: &str,
+        description: Option<&str>,
         examples: &[String],
     ) -> Result<()> {
         let examples_json = serde_json::to_string(examples)?;
@@ -407,5 +450,30 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Dernier run de decouverte TERMINE ok/fallback (le plus recent), s'il y en
+    /// a un. Les runs `error` ou `running` (orphelin apres crash) sont ignores
+    /// (revue PR #13) : seuls les runs reussis font tourner l'horloge
+    /// d'intervalle — un echec reste "due", retente au poll suivant.
+    /// Sert a `runner::discovery_due`.
+    pub fn last_discovery_run(&self, mailbox: &str) -> Result<Option<DiscoveryRun>> {
+        self.conn
+            .query_row(
+                "SELECT started_at, finished_at, status, folders_profiled FROM discovery_run
+                 WHERE mailbox_id=?1 AND status IN ('ok','fallback') AND finished_at IS NOT NULL
+                 ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                params![mailbox],
+                |row| {
+                    Ok(DiscoveryRun {
+                        started_at: row.get(0)?,
+                        finished_at: row.get(1)?,
+                        status: row.get(2)?,
+                        folders_profiled: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Error::from)
     }
 }

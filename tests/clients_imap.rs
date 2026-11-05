@@ -17,6 +17,7 @@ struct FakeImapState {
     copies: Vec<(u32, String)>,
     moves: Vec<(u32, String)>,
     fetch_queries: Vec<String>,
+    search_queries: Vec<String>,
     verbs: Vec<String>,
 }
 
@@ -27,6 +28,7 @@ async fn spawn_fake_imap() -> (u16, Arc<Mutex<FakeImapState>>) {
         copies: Vec::new(),
         moves: Vec::new(),
         fetch_queries: Vec::new(),
+        search_queries: Vec::new(),
         verbs: Vec::new(),
     }));
     let state_out = state.clone();
@@ -74,7 +76,18 @@ async fn spawn_fake_imap() -> (u16, Arc<Mutex<FakeImapState>>) {
                 "UID" => {
                     let (sub, args) = rest.split_once(' ').unwrap_or((rest.as_str(), ""));
                     match sub {
-                        "SEARCH" => format!("* SEARCH 1\r\n{tag} OK SEARCH ok\r\n"),
+                        "SEARCH" => {
+                            state_out
+                                .lock()
+                                .unwrap()
+                                .search_queries
+                                .push(args.to_string());
+                            if args == "UNSEEN" {
+                                format!("* SEARCH 1\r\n{tag} OK SEARCH ok\r\n")
+                            } else {
+                                format!("* SEARCH 1 2\r\n{tag} OK SEARCH ok\r\n")
+                            }
+                        }
                         "FETCH" => {
                             let uid: u32 = args
                                 .split(' ')
@@ -109,7 +122,7 @@ async fn spawn_fake_imap() -> (u16, Arc<Mutex<FakeImapState>>) {
                 }
                 "LIST" => {
                     format!(
-                        "* LIST (\\HasNoChildren) \"/\" INBOX\r\n* LIST (\\HasNoChildren \\Sent) \"/\" Sent\r\n* LIST (\\HasNoChildren \\Trash) \"/\" Trash\r\n* LIST (\\HasNoChildren) \"/\" Factures\r\n{tag} OK LIST ok\r\n"
+                        "* LIST (\\HasNoChildren) \"/\" INBOX\r\n* LIST (\\HasNoChildren \\Sent) \"/\" Sent\r\n* LIST (\\HasNoChildren \\Trash) \"/\" Trash\r\n* LIST (\\HasNoChildren \\Archive) \"/\" Archive\r\n* LIST (\\Noselect \\HasChildren) \"/\" Parent\r\n* LIST (\\HasNoChildren) \"/\" Factures\r\n{tag} OK LIST ok\r\n"
                     )
                 }
                 "NOOP" => format!("{tag} OK NOOP ok\r\n"),
