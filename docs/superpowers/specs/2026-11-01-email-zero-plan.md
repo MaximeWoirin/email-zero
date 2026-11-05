@@ -40,10 +40,11 @@ pub trait LlmClient {
 }
 ```
 
-**Trois niveaux de tests** :
+**Quatre niveaux de tests** :
 1. **Unitaires** (rapides, par fonction) : parsing config, logique UIDVALIDITY, validation whitelist, seuil de confiance.
 2. **Intégration** (le cœur, ce qu'on cherche) : le pipeline complet — fake IMAP rempli de mails, fake LLM avec des réponses scriptées, assertions sur les actions produites et le contenu du state store. Zéro réseau.
-3. **Smoke réel** (hors CI, manuel) : `--dry-run` contre les vraies boîtes Orange et Proton. Jamais d'écriture en CI, jamais de secret dans les tests.
+3. **Conformité RFC (CI, boucle locale)** : le vrai client IMAP contre un vrai serveur — conteneur Dovecot sur le loopback, compte factice, fixtures maildir committées (`tests/fixtures/maildir/`, `tests/imap_dovecot.rs` en `#[ignore]`, job CI `imap-dovecot`, issue #17). attrape en CI les divergences fake/serveur réel (ex. #16) avant le smoke.
+4. **Smoke réel** (hors CI, manuel) : `--dry-run` contre les vraies boîtes Orange et Proton. Jamais d'écriture en CI, jamais de secret dans les tests.
 
 **Chaque test est nommé d'après une décision de la spec** : `test_erreurs`, `confidence_sous_seuil_reste_dans_inbox`, `uidvalidity_change_retraite_le_dossier`, etc. La spec est la source des tests.
 
@@ -60,6 +61,7 @@ pub trait LlmClient {
 | 2b | Clients réels IMAP (`async-imap` + rustls, `src/clients/imap.rs`, fetch en `BODY.PEEK[]` pour ne jamais poser `\Seen`, UIDVALIDITY lue sur la réponse SELECT sans STATUS) et LLM OpenAI-compatible (`reqwest`, `src/clients/llm.rs`, base_url https exigée hors loopback), retry/backoff (`src/retry.rs`), daemon en boucle avec reconnexion par itération (`main`) ; tests loopback uniquement | #10 (`vibe/jalon-2b-clients-reels-6fdc40`) | mergée |
 | 2c | Job de découverte des dossiers (`src/discovery.rs` : LIST + special-use RFC 6154, INBOX hors whitelist, `exclude_folders` par nom ou special-use, échantillonnage des N derniers headers `SEARCH ALL` + `BODY.PEEK[HEADER]`, **une seule requête LLM** de profilage (`PROFILING_SCHEMA`, réassociation par `name`, prompt `prompts/discovery.md`), profils en cache `folder` avec `updated_at`, `discovery_run` ok/fallback/error, fallback = échantillons bruts sans description) câblé dans le daemon (due si aucun run ou `discovery.interval_secs` écoulé depuis le dernier run, `--refresh-folders` force) + `MailClient::search_all` + `parse_iso8601_utc` + `examples_in_prompt` bornant les exemples dans le prompt de triage | #13 (`vibe/jalon-2c-discovery-dossiers-c0cb9f`) | mergée |
 | 3 | Conteneur + déploiement POC (jalon 8 ci-dessous) : `Dockerfile` multi-stage (builder sur `$BUILDPLATFORM`, cross-compile `aarch64-unknown-linux-gnu` via `gcc-aarch64-linux-gnu`, runtime `debian:bookworm-slim` + user non-root uid 10001, `prompts/` embarqués), `.dockerignore`, `docker-compose.yml` prod (`email-zero` + `bridge` Proton : config montée en ro, `data/` state store, secrets via `.env`/`env_file`, ports Bridge en loopback uniquement, image bridge surchargeable `BRIDGE_IMAGE`), `.env.example`, CI `Docker` (build `linux/arm64` + smoke `--version` sous QEMU). Smoke réel `--dry-run` sur Orange/Proton : **manuel, hors CI** | #14 (`vibe/jalon-3-conteneur-deploiement-a419eb`) | mergée |
+| 2b+ | Étage de conformité RFC en CI : client IMAP réel contre un conteneur Dovecot (loopback uniquement, compte factice, fixtures maildir committées `tests/fixtures/maildir/`, config `tests/dovecot/dovecot.conf`, suite `#[ignore]` `tests/imap_dovecot.rs`, job CI `imap-dovecot`) — attrape les divergences fake/serveur réel (ex. #16) avant le smoke réel | #20 (`vibe/issue-17-dovecot-ci-4d7e2a`, issue #17) | en revue |
 
 ## Plan détaillé par jalon (référence TDD)
 
@@ -175,6 +177,7 @@ Chaque jalon ne démarre que le précédent est vert (CI inclus). Les jalons 4 e
 
 ## Risques suivis
 
+- **Divergence fake/serveur réel IMAP** : le mini-serveur `tests/clients_imap.rs` peut valider ce que le code attend au lieu de ce qu'un serveur réel répond (arrivé avec #16 : `BODY[]` répondant à toute requête FETCH) → étage CI `imap-dovecot` (client réel contre Dovecot en conteneur, loopback, #17) ; le smoke réel reste l'arbitre final.
 - **async-imap + Bridge** : comportements IMAP spécifiques de Bridge (UIDVALIDITY qui bouge ?) → découvert au smoke, jalon 8, avec les logs de diagnostic prévus.
 - **RAM du Pi** : mesurée au jalon 8 ; si ça coince avec Bridge, repli VPS sans changement de code.
 - **Qualité LLM des profils de dossiers** : si le tri est douteux en smoke, itérer sur le prompt (le prompt est un artefact versionné, pas du code).

@@ -1,0 +1,17 @@
+From: rapport@shop.fr
+To: testuser@example.test
+Subject: Rapport hebdomadaire
+Date: Thu, 02 Nov 2026 09:30:00 +0100
+Message-ID: <msg-rapport@dovecot-test>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="BOUNDARY_RAPPORT"
+
+--BOUNDARY_RAPPORT
+Content-Type: text/plain; charset=utf-8
+
+Version texte du rapport.
+--BOUNDARY_RAPPORT
+Content-Type: text/html; charset=utf-8
+
+<p>Version HTML du rapport.</p>
+--BOUNDARY_RAPPORT--
