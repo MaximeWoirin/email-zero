@@ -154,6 +154,8 @@ pub struct ImapMailClient {
     session: BoxSession,
     retry: RetryConfig,
     selected: Option<String>,
+    /// UIDVALIDITY lue sur la reponse du SELECT du dossier courant.
+    uidvalidity_cache: Option<u32>,
 }
 
 impl ImapMailClient {
@@ -162,6 +164,7 @@ impl ImapMailClient {
             session,
             retry,
             selected: None,
+            uidvalidity_cache: None,
         }
     }
 
@@ -170,12 +173,16 @@ impl ImapMailClient {
             return Ok(());
         }
         let folder_arg = folder.to_string();
-        retried!(self, session, {
+        // RFC 3501 §6.3.1 : la reponse SELECT porte deja `OK [UIDVALIDITY n]`
+        // — on la met en cache, aucun STATUS supplementaire n'est necessaire
+        // (la RFC deconseille d'ailleurs STATUS sur le dossier selectionne).
+        let mb = retried!(self, session, {
             session
                 .select(folder_arg.clone())
                 .await
                 .map_err(|e| Error::Imap(e.to_string()))
         })?;
+        self.uidvalidity_cache = mb.uid_validity;
         self.selected = Some(folder.to_string());
         Ok(())
     }
@@ -221,16 +228,15 @@ impl MailClient for ImapMailClient {
     }
 
     async fn uidvalidity(&mut self, folder: &str) -> Result<u32> {
+        // UIDVALIDITY deja portee par la reponse du SELECT (mis en cache par
+        // select()) : zero aller-retour supplementaire, et pas de STATUS sur
+        // le dossier selectionne (deconseille par RFC 3501 §6.3.2).
         self.select(folder).await?;
-        let folder_arg = folder.to_string();
-        let mb = retried!(self, session, {
-            session
-                .status(&folder_arg, "(UIDVALIDITY)")
-                .await
-                .map_err(|e| Error::Imap(e.to_string()))
-        })?;
-        mb.uid_validity
-            .ok_or_else(|| Error::Imap(format!("UIDVALIDITY absent pour {folder}")))
+        self.uidvalidity_cache.ok_or_else(|| {
+            Error::Imap(format!(
+                "UIDVALIDITY absent de la reponse SELECT pour {folder}"
+            ))
+        })
     }
 
     async fn search_unseen(&mut self, folder: &str) -> Result<Vec<u32>> {
@@ -247,7 +253,43 @@ impl MailClient for ImapMailClient {
     }
 
     async fn fetch_headers(&mut self, folder: &str, uid: u32) -> Result<MailHeader> {
-        Ok(self.fetch_body(folder, uid).await?.header)
+        // BODY.PEEK[HEADER] : on ne telecharge que l'en-tete (echantillonnage
+        // du jalon 2c), et PEEK ne pose jamais \Seen.
+        self.select(folder).await?;
+        let raw = retried!(self, session, {
+            let stream = session
+                .uid_fetch(uid.to_string(), "BODY.PEEK[HEADER]")
+                .await
+                .map_err(|e| Error::Imap(e.to_string()))?;
+            let fetches: Vec<_> = stream
+                .try_collect()
+                .await
+                .map_err(|e| Error::Imap(e.to_string()))?;
+            fetches
+                .into_iter()
+                .find(|f| f.uid == Some(uid))
+                .and_then(|f| f.body().map(|b| b.to_vec()))
+                .ok_or_else(|| {
+                    Error::Imap(format!("uid {uid}: en-tete absent de la reponse FETCH"))
+                })
+        })?;
+        let msg = mail_parser::MessageParser::new()
+            .parse(&raw)
+            .ok_or_else(|| Error::Imap(format!("uid {uid}: parsing RFC 5322 impossible")))?;
+        let from = msg
+            .from()
+            .and_then(|l| l.first())
+            .map(|a| match (a.name(), a.address()) {
+                (Some(n), Some(e)) => format!("{n} <{e}>"),
+                (None, Some(e)) => e.to_string(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        Ok(MailHeader {
+            subject: msg.subject().unwrap_or("").to_string(),
+            from,
+            date: msg.date().map(|d| d.to_rfc3339()).unwrap_or_default(),
+        })
     }
 
     async fn fetch_body(&mut self, folder: &str, uid: u32) -> Result<ParsedMail> {

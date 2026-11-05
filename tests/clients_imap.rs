@@ -17,6 +17,7 @@ struct FakeImapState {
     copies: Vec<(u32, String)>,
     moves: Vec<(u32, String)>,
     fetch_queries: Vec<String>,
+    verbs: Vec<String>,
 }
 
 async fn spawn_fake_imap() -> (u16, Arc<Mutex<FakeImapState>>) {
@@ -26,6 +27,7 @@ async fn spawn_fake_imap() -> (u16, Arc<Mutex<FakeImapState>>) {
         copies: Vec::new(),
         moves: Vec::new(),
         fetch_queries: Vec::new(),
+        verbs: Vec::new(),
     }));
     let state_out = state.clone();
     tokio::spawn(async move {
@@ -53,6 +55,7 @@ async fn spawn_fake_imap() -> (u16, Arc<Mutex<FakeImapState>>) {
                 Some((v, r)) => (v.to_ascii_uppercase(), r.to_string()),
                 None => (cmd.to_ascii_uppercase(), String::new()),
             };
+            state_out.lock().unwrap().verbs.push(verb.clone());
             let reply = match verb.as_str() {
                 "LOGIN" => format!("{tag} OK LOGIN ok\r\n"),
                 "CAPABILITY" => {
@@ -172,10 +175,49 @@ async fn list_folders_retourne_noms_et_special_use() {
 }
 
 #[tokio::test]
-async fn uidvalidity_vient_du_status() {
-    let (port, _state) = spawn_fake_imap().await;
+async fn uidvalidity_vient_du_select_sans_status() {
+    let (port, state) = spawn_fake_imap().await;
     let mut client = connect_client(port).await;
+
+    // UIDVALIDITY portee par la reponse SELECT (RFC 3501 §6.3.1), zero STATUS
     assert_eq!(client.uidvalidity("INBOX").await.unwrap(), 42);
+    // un second appel sur le meme dossier ne re-SELECT ni ne STATUS
+    assert_eq!(client.uidvalidity("INBOX").await.unwrap(), 42);
+
+    let st = state.lock().unwrap();
+    assert!(
+        !st.verbs.iter().any(|v| v == "STATUS"),
+        "aucune commande STATUS ne doit etre emise : {:?}",
+        st.verbs
+    );
+    assert_eq!(
+        st.verbs.iter().filter(|v| *v == "SELECT").count(),
+        1,
+        "un seul SELECT (mis en cache) : {:?}",
+        st.verbs
+    );
+}
+
+#[tokio::test]
+async fn fetch_headers_utilise_body_peek_header() {
+    let (port, state) = spawn_fake_imap().await;
+    let mut client = connect_client(port).await;
+
+    let h = client.fetch_headers("INBOX", 1).await.unwrap();
+
+    assert_eq!(h.subject, "Facture octobre");
+    assert!(h.from.contains("alice@example.com"));
+    let st = state.lock().unwrap();
+    assert!(
+        st.fetch_queries.iter().any(|q| q == "BODY.PEEK[HEADER]"),
+        "fetch_headers doit emettre BODY.PEEK[HEADER] : {:?}",
+        st.fetch_queries
+    );
+    assert!(
+        !st.fetch_queries.iter().any(|q| q == "BODY.PEEK[]"),
+        "fetch_headers ne doit PAS telecharger le corps complet : {:?}",
+        st.fetch_queries
+    );
 }
 
 #[tokio::test]
