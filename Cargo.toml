@@ -5,12 +5,18 @@ edition = "2021"
 description = "Pre-traitement d'emails par IA, headless : worker IMAP qui trie via un LLM OpenAI-compatible"
 
 [dependencies]
+async-imap = { version = "0.12", default-features = false, features = ["runtime-tokio"] }
 clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
+mail-parser = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "io-util"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+webpki-roots = "0.26"

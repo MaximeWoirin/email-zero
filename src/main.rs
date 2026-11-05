@@ -1,6 +1,10 @@
+use std::pin::Pin;
+
 use clap::Parser;
+use email_zero::clients::llm::OpenAiLlmClient;
 use email_zero::config::Config;
 use email_zero::error::Result;
+use email_zero::runner::{daemon_loop, real_connect};
 use email_zero::store::Store;
 use tracing_subscriber::EnvFilter;
 
@@ -66,26 +70,22 @@ async fn main() -> Result<()> {
         "email-zero demarre"
     );
 
-    if cli.once || cli.dry_run || cli.refresh_folders {
-        tracing::info!(
-            "les clients IMAP/LLM reels et le job de decouverte arrivent au jalon 2b ; \
-             aucun acces serveur effectue (state store ouvert et synchronise)"
-        );
-    }
+    let llm = OpenAiLlmClient::new_from_env(&cfg.llm)?;
 
-    // Fail-fast assume (revue PR #9) : pipeline_config_for lit triage.prompt_path,
-    // donc le binaire refuse de demarrer si le fichier de prompt est absent —
-    // pertinent pour le daemon du jalon 2b (pas de run a vide silencieux).
-    for mb in &cfg.mailboxes {
-        let pc = email_zero::pipeline::pipeline_config_for(&cfg, &store, &mb.id, cli.dry_run)?;
-        tracing::info!(
-            mailbox = %mb.id,
-            dry_run = pc.dry_run,
-            whitelist = ?pc.whitelist,
-            batch_size = pc.batch_size,
-            max_body_chars = pc.max_body_chars,
-            "pipeline config construite"
-        );
-    }
-    Ok(())
+    // Boucle daemon : chaque iteration reconnecte chaque boite (une session
+    // inactive est deconnectee par le serveur entre deux polls). --once = un
+    // seul tour. Une boite en echec est logguee mais ne tue pas le daemon.
+    let password_lookup = |name: &str| std::env::var(name).ok();
+    let mut sleep = |secs: u64| {
+        Ok(Box::pin(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+        })
+            as Pin<Box<dyn std::future::Future<Output = ()> + Send>>)
+    };
+    let mut deps = email_zero::runner::DaemonDeps {
+        connect_fn: &real_connect,
+        password_lookup: &password_lookup,
+        sleep: &mut sleep,
+    };
+    daemon_loop(&cfg, &llm, &mut store, cli.once, cli.dry_run, &mut deps).await
 }
