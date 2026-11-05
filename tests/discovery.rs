@@ -1,3 +1,5 @@
+mod common;
+
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -750,28 +752,8 @@ async fn spawn_e2e_imap() -> (u16, Arc<Mutex<Vec<(u32, String)>>>) {
                             format!("* SEARCH 1\r\n{tag} OK SEARCH ok\r\n")
                         }
                         "FETCH" => {
-                            let uid: u32 =
-                                args.split(' ').next().and_then(|s| s.parse().ok()).unwrap_or(0);
-                            let query = args.split_once(' ').map(|x| x.1).unwrap_or("");
-                            // RFC 3501 §6.4.5 : BODY.PEEK[HEADER] -> reponse BODY[HEADER]
-                            // (en-tete seul), BODY.PEEK[] -> BODY[] (message complet).
-                            if query == "BODY.PEEK[HEADER]" {
-                                let header = format!(
-                                    "{}\r\n\r\n",
-                                    E2E_MAIL.split("\r\n\r\n").next().unwrap_or(E2E_MAIL)
-                                );
-                                let bytes = header.as_bytes();
-                                format!(
-                                    "* 1 FETCH (UID {uid} BODY[HEADER] {{{}}}\r\n{header})\r\n{tag} OK FETCH ok\r\n",
-                                    bytes.len()
-                                )
-                            } else {
-                                let body = E2E_MAIL.as_bytes();
-                                format!(
-                                    "* 1 FETCH (UID {uid} BODY[] {{{}}}\r\n{E2E_MAIL})\r\n{tag} OK FETCH ok\r\n",
-                                    body.len()
-                                )
-                            }
+                            let (uid, query) = common::split_fetch_args(args);
+                            common::fetch_reply(&tag, uid, query, E2E_MAIL)
                         }
                         "COPY" => {
                             let mut it = args.splitn(2, ' ');
