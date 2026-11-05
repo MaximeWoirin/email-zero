@@ -26,6 +26,8 @@ Pour chaque email du batch, tu produis un objet JSON strict avec exactement ces 
 Règles :
 
 - `candidates` contient **au moins un** élément et est ordonné par confiance décroissante.
+- Si aucun dossier ne convient vraiment, propose le plus proche avec une confiance faible :
+  le seuil fera rester le mail dans INBOX plutôt que de forcer un placement incertain.
 - Quand plusieurs dossiers sont plausibles pour un même email, liste-les tous avec leurs
   vraies confidences : le moteur retiendra le candidat de confiance maximale (à égalité,
   le premier de la liste). Ne te contente pas du « meilleur » dossier en cachant les autres.
