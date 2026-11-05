@@ -17,6 +17,7 @@ struct FakeMail {
     folders: RefCell<Vec<Folder>>,
     fail_list: bool,
     mails: HashMap<(String, u32), ParsedMail>,
+    search_all_calls: RefCell<usize>,
 }
 
 impl FakeMail {
@@ -25,6 +26,7 @@ impl FakeMail {
             folders: RefCell::new(folders),
             fail_list: false,
             mails: HashMap::new(),
+            search_all_calls: RefCell::new(0),
         }
     }
 
@@ -64,6 +66,7 @@ impl MailClient for FakeMail {
         self.search_all(folder).await
     }
     async fn search_all(&mut self, folder: &str) -> Result<Vec<u32>> {
+        *self.search_all_calls.borrow_mut() += 1;
         let mut uids: Vec<u32> = self
             .mails
             .keys()
@@ -476,6 +479,118 @@ async fn dossier_vide_description_inconnue_et_hors_prompt_llm() {
         !prompt.contains("Vide"),
         "un dossier vide n'est pas envoye au LLM (il ne l'utiliserait pas): {prompt}"
     );
+    // revue PR #13 : folders_profiled compte les profils LLM effectifs (1),
+    // pas la taille de la whitelist (2) — le dossier vide n'est pas "profile"
+    let runs = store.discovery_runs("orange").unwrap();
+    assert_eq!(runs[0].folders_profiled, Some(1));
+}
+
+#[tokio::test]
+async fn echec_mi_parcours_conserve_les_descriptions_du_run_precedent() {
+    // revue PR #13 : run 1 ok (profil en cache), run 2 echoue apres le LIST
+    // (reponse LLM rejetee) -> la description du run 1 n'est pas perdue.
+    let mut mail = FakeMail::new(vec![Folder {
+        name: "Factures".into(),
+        special_use: None,
+    }]);
+    mail.add_mail("Factures", 1, "edf@edf.fr", "Facture octobre");
+    let llm = FakeLlm::ok(vec![
+        profiling_response(vec![profile(
+            "Factures",
+            "factures run 1",
+            &["Facture octobre"],
+        )]),
+        profiling_response(vec![profile("Inconnu", "orphelin", &["?"])]),
+    ]);
+    let mut store = setup_store();
+
+    run_discovery(&mut mail, &llm, &mut store, "orange", &params())
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .folder_profile("orange", "Factures")
+            .unwrap()
+            .unwrap()
+            .description
+            .as_deref(),
+        Some("factures run 1")
+    );
+
+    let err = run_discovery(&mut mail, &llm, &mut store, "orange", &params())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Llm(_)));
+    assert_eq!(
+        store
+            .discovery_runs("orange")
+            .unwrap()
+            .last()
+            .unwrap()
+            .status,
+        "error"
+    );
+    // la description du run 1 a survecu a l'echec du run 2
+    let p = store.folder_profile("orange", "Factures").unwrap().unwrap();
+    assert_eq!(p.description.as_deref(), Some("factures run 1"));
+}
+
+#[tokio::test]
+async fn profil_en_double_nomme_le_dossier_fautif() {
+    // revue PR #13 : le message d'erreur du doublon nomme le vrai dossier.
+    let mut mail = FakeMail::new(vec![Folder {
+        name: "Factures".into(),
+        special_use: None,
+    }]);
+    mail.add_mail("Factures", 1, "edf@edf.fr", "Facture octobre");
+    let llm = FakeLlm::ok(vec![profiling_response(vec![
+        profile("Factures", "factures", &["Facture octobre"]),
+        profile("Factures", "encore", &["?"]),
+    ])]);
+    let mut store = setup_store();
+
+    let err = run_discovery(&mut mail, &llm, &mut store, "orange", &params())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, Error::Llm(_)));
+    assert!(
+        err.to_string().contains("Factures"),
+        "le message doit nommer le dossier en double: {err}"
+    );
+}
+
+#[tokio::test]
+async fn sample_per_folder_zero_desactive_l_echantillonnage() {
+    // revue PR #13 : convention du projet « 0 = desactive » — 0 = aucun
+    // echantillonnage (aucune commande SEARCH/FETCH, aucune requete LLM),
+    // les dossiers whitelistes recoivent la description "inconnue".
+    let mut mail = FakeMail::new(vec![Folder {
+        name: "Factures".into(),
+        special_use: None,
+    }]);
+    mail.add_mail("Factures", 1, "edf@edf.fr", "Facture octobre");
+    mail.add_mail("Factures", 2, "amazon@x.fr", "Recu amazon");
+    let llm = FakeLlm::ok(vec![]); // aucune reponse scriptee : tout appel LLM echouerait
+    let mut store = setup_store();
+    let mut p = params();
+    p.sample_per_folder = 0;
+
+    let stats = run_discovery(&mut mail, &llm, &mut store, "orange", &p)
+        .await
+        .unwrap();
+
+    assert_eq!(stats.status, "ok");
+    assert_eq!(*llm.schema_calls.borrow(), 0, "aucune requete LLM");
+    assert_eq!(
+        *mail.search_all_calls.borrow(),
+        0,
+        "aucune commande SEARCH ALL non plus"
+    );
+    assert_eq!(store.whitelist("orange").unwrap(), vec!["Factures"]);
+    let prof = store.folder_profile("orange", "Factures").unwrap().unwrap();
+    assert_eq!(prof.description.as_deref(), Some("inconnue"));
+    assert!(prof.examples.is_empty());
 }
 
 #[tokio::test]

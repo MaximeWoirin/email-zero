@@ -270,6 +270,9 @@ impl Store {
     }
 
     /// (name, description, excluded) — excluded=1 -> hors whitelist (Sent, Trash...).
+    /// La description n'est PAS touchee par le DO UPDATE (revue PR #13) : elle
+    /// n'appartient qu'a `set_folder_profile`, pour qu'un run de decouverte qui
+    /// echoue mi-parcours ne fasse pas perdre les descriptions du run precedent.
     pub fn upsert_folders(
         &mut self,
         mailbox: &str,
@@ -281,7 +284,6 @@ impl Store {
                 "INSERT INTO folder (mailbox_id, name, description, \"excluded\", updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT (mailbox_id, name) DO UPDATE SET
-                   description=excluded.description,
                    \"excluded\"=excluded.\"excluded\",
                    updated_at=excluded.updated_at",
                 params![mailbox, name, description, *excluded as i64, now],
@@ -450,9 +452,28 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
-    /// Dernier run de decouverte de la boite (le plus recent), s'il y en a un :
-    /// sert au daemon a decider si la decouverte est due (intervalle ecoule).
+    /// Dernier run de decouverte TERMINE ok/fallback (le plus recent), s'il y en
+    /// a un. Les runs `error` ou `running` (orphelin apres crash) sont ignores
+    /// (revue PR #13) : seuls les runs reussis font tourner l'horloge
+    /// d'intervalle — un echec reste "due", retente au poll suivant.
+    /// Sert a `runner::discovery_due`.
     pub fn last_discovery_run(&self, mailbox: &str) -> Result<Option<DiscoveryRun>> {
-        Ok(self.discovery_runs(mailbox)?.into_iter().next_back())
+        self.conn
+            .query_row(
+                "SELECT started_at, finished_at, status, folders_profiled FROM discovery_run
+                 WHERE mailbox_id=?1 AND status IN ('ok','fallback') AND finished_at IS NOT NULL
+                 ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                params![mailbox],
+                |row| {
+                    Ok(DiscoveryRun {
+                        started_at: row.get(0)?,
+                        finished_at: row.get(1)?,
+                        status: row.get(2)?,
+                        folders_profiled: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Error::from)
     }
 }

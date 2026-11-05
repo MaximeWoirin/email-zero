@@ -165,14 +165,18 @@ async fn sample_folder<M: MailClient>(
     folder: &str,
     sample_per_folder: usize,
 ) -> Result<FolderSample> {
+    if sample_per_folder == 0 {
+        // convention projet « 0 = desactive » : aucun echantillonnage, aucune
+        // commande IMAP — le dossier est traite comme vide pour le prompt.
+        return Ok(FolderSample {
+            name: folder.to_string(),
+            top_senders: Vec::new(),
+            mails: Vec::new(),
+        });
+    }
     let mut uids = mail.search_all(folder).await?;
     uids.sort_unstable();
-    let mut last: Vec<u32> = uids
-        .iter()
-        .rev()
-        .take(sample_per_folder.max(1))
-        .copied()
-        .collect();
+    let mut last: Vec<u32> = uids.iter().rev().take(sample_per_folder).copied().collect();
     last.sort_unstable();
     let mut mails = Vec::with_capacity(last.len());
     for uid in last {
@@ -249,10 +253,10 @@ async fn run_discovery_inner<M: MailClient, L: LlmClient>(
             Ok(resp) => {
                 let mut by_name: HashMap<String, FolderProfileOut> = HashMap::new();
                 for p in resp.folders {
-                    if by_name.insert(p.name.clone(), p).is_some() {
+                    let name = p.name.clone();
+                    if by_name.insert(name.clone(), p).is_some() {
                         return Err(Error::Llm(format!(
-                            "profil en double pour le dossier {}",
-                            by_name.keys().next().unwrap_or(&String::new())
+                            "profil en double pour le dossier {name}"
                         )));
                     }
                 }
@@ -331,8 +335,10 @@ pub async fn run_discovery<M: MailClient, L: LlmClient>(
     store.start_discovery_run(mailbox)?;
     match run_discovery_inner(mail, llm, store, mailbox, params).await {
         Ok(stats) => {
+            // revue PR #13 : folders_profiled = nombre de profils LLM effectifs
+            // (les dossiers vides « inconnue » ne comptent pas).
             let profiled_count = if stats.status == "ok" {
-                Some(stats.whitelisted as i64)
+                Some(stats.profiled as i64)
             } else {
                 None
             };

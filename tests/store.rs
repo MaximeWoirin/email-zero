@@ -168,6 +168,49 @@ fn save_triage_result_sans_processed_en_premier_est_rejete() {
 }
 
 #[test]
+fn upsert_folders_ne_efface_pas_la_description_existante() {
+    // revue PR #13 : la description n'appartient qu'a set_folder_profile ;
+    // un re-run de decouverte (upsert avec None) ne doit pas l'ecraser, meme
+    // si le run echoue ensuite mi-parcours.
+    let mut store = open_store();
+    store.sync_mailboxes(&["orange".to_string()]).unwrap();
+    store
+        .upsert_folders("orange", &[("Factures", Some("factures et recus"), false)])
+        .unwrap();
+    store
+        .upsert_folders("orange", &[("Factures", None, false)])
+        .unwrap();
+    let p = store.folder_profile("orange", "Factures").unwrap().unwrap();
+    assert_eq!(p.description.as_deref(), Some("factures et recus"));
+    // le flag excluded, lui, est bien mis a jour par l'upsert
+    store
+        .upsert_folders("orange", &[("Factures", None, true)])
+        .unwrap();
+    assert!(!store
+        .whitelist("orange")
+        .unwrap()
+        .contains(&"Factures".to_string()));
+}
+
+#[test]
+fn last_discovery_run_ignore_les_runs_error_et_running() {
+    // revue PR #13 : seuls les runs termines ok/fallback font tourner
+    // l'horloge d'intervalle (voir discovery_due).
+    let mut store = open_store();
+    store.sync_mailboxes(&["orange".to_string()]).unwrap();
+    store.start_discovery_run("orange").unwrap();
+    store.finish_discovery_run("orange", "ok", Some(3)).unwrap();
+    store.start_discovery_run("orange").unwrap();
+    store.finish_discovery_run("orange", "error", None).unwrap();
+    store.start_discovery_run("orange").unwrap(); // running orphelin (crash)
+    let last = store.last_discovery_run("orange").unwrap().unwrap();
+    assert_eq!(last.status, "ok", "error/running ignores");
+    assert_eq!(last.folders_profiled, Some(3));
+    // historique complet conserve par discovery_runs
+    assert_eq!(store.discovery_runs("orange").unwrap().len(), 3);
+}
+
+#[test]
 fn discovery_run_enregistre_ok_et_fallback() {
     let mut store = open_store();
     store.sync_mailboxes(&["orange".to_string()]).unwrap();

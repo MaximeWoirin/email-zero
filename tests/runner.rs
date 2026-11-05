@@ -146,3 +146,37 @@ fn discovery_due_faux_avant_interval_vrai_apres() {
     // intervalle nul : toujours due
     assert!(discovery_due(&store, "ok", 0).unwrap());
 }
+
+#[test]
+fn discovery_due_reporte_quand_aucun_run_ok_ou_fallback() {
+    // revue PR #13 : un run `error` (ou `running` orphelin) ne fait pas tourner
+    // l'horloge — la decouverte reste due et est retentee au poll suivant.
+    let mut store = Store::open_in_memory().unwrap();
+    store.sync_mailboxes(&["ok".to_string()]).unwrap();
+    store.start_discovery_run("ok").unwrap();
+    store.finish_discovery_run("ok", "error", None).unwrap();
+    assert!(
+        discovery_due(&store, "ok", 86400).unwrap(),
+        "dernier run = error, aucun ok/fallback : due (retente au poll suivant)"
+    );
+    let mut store = Store::open_in_memory().unwrap();
+    store.sync_mailboxes(&["ok".to_string()]).unwrap();
+    store.start_discovery_run("ok").unwrap(); // running orphelin (crash du process)
+    assert!(discovery_due(&store, "ok", 86400).unwrap());
+}
+
+#[test]
+fn discovery_due_un_error_apres_un_ok_recent_ne_redeclenche_pas() {
+    // l'horloge tourne sur le dernier run ok/fallback : un error ulterieur ne
+    // retente pas tant que l'intervalle n'est pas ecoule depuis le ok.
+    let mut store = Store::open_in_memory().unwrap();
+    store.sync_mailboxes(&["ok".to_string()]).unwrap();
+    store.start_discovery_run("ok").unwrap();
+    store.finish_discovery_run("ok", "ok", Some(2)).unwrap();
+    store.start_discovery_run("ok").unwrap();
+    store.finish_discovery_run("ok", "error", None).unwrap();
+    assert!(
+        !discovery_due(&store, "ok", 86400).unwrap(),
+        "dernier ok/fallback date d'a l'instant : pas due malgre l'error suivant"
+    );
+}
