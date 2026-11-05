@@ -1,6 +1,6 @@
-use std::time::Duration;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::time::Duration;
 
 use crate::config::{LlmConfig, RetryConfig};
 use crate::error::{Error, Result};
@@ -73,7 +73,10 @@ pub fn validate_base_url(base_url: &str) -> Result<()> {
             .strip_prefix("http://")
             .and_then(|rest| rest.split(['/', ':']).next())
             .unwrap_or("");
-        if matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]" | "host.docker.internal") {
+        if matches!(
+            host,
+            "127.0.0.1" | "localhost" | "::1" | "[::1]" | "host.docker.internal"
+        ) {
             return Ok(());
         }
         return Err(Error::Config(format!(
