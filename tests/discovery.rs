@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use email_zero::clients::llm::OpenAiLlmClient;
 use email_zero::config::Config;
-use email_zero::discovery::{run_discovery, DiscoveryParams, DiscoveryStats, PROFILING_SCHEMA};
+use email_zero::discovery::{
+    is_excluded, run_discovery, DiscoveryParams, DiscoveryStats, PROFILING_SCHEMA,
+};
 use email_zero::error::{Error, Result};
 use email_zero::ports::{Folder, JsonChatRequest, LlmClient, MailClient, MailHeader, ParsedMail};
 use email_zero::runner::{poll_mailbox, real_connect, PollOptions};
@@ -296,6 +298,107 @@ async fn exclude_folders_config_s_ajoute_aux_exclusions_special_use() {
         .unwrap();
 
     assert_eq!(store.whitelist("orange").unwrap(), vec!["Factures"]);
+}
+
+#[test]
+fn is_excluded_match_par_composant_de_chemin_insensible_a_la_casse_et_sous_arbre() {
+    // issue #28 : un dossier est exclu si UN composant de son chemin (separateur
+    // `/`) correspond, insensible a la casse, a une entree de exclude_folders —
+    // un dossier exclu exclut tout son sous-arbre (matching par prefixe)
+    let excl: Vec<String> = vec!["Sent".into(), "Trash".into(), "\\Junk".into()];
+    let f = |name: &str, special_use: Option<&str>| Folder {
+        name: name.into(),
+        special_use: special_use.map(str::to_string),
+    };
+    // nom exact, quelle que soit la casse
+    assert!(is_excluded(&f("Trash", None), &excl));
+    assert!(is_excluded(&f("TRASH", None), &excl));
+    // sous-arbre entier exclu
+    assert!(is_excluded(&f("INBOX/Trash", None), &excl));
+    assert!(is_excluded(&f("INBOX/TRASH", None), &excl));
+    assert!(is_excluded(&f("INBOX/TRASH/Documents", None), &excl));
+    assert!(is_excluded(
+        &f("INBOX/TRASH/Certificats inscription", None),
+        &excl
+    ));
+    // special-use RFC 6154 : backslash et casse indifferentiels
+    assert!(is_excluded(&f("Spam", Some("\\junk")), &excl));
+    assert!(is_excluded(
+        &f("Courrier indesirable", Some("\\Junk")),
+        &excl
+    ));
+    // dossier source INBOX toujours exclu
+    assert!(is_excluded(&f("INBOX", None), &excl));
+    // pas de match partiel sur un composant
+    assert!(!is_excluded(&f("Trashy", None), &excl));
+    assert!(!is_excluded(&f("INBOX/TrashOld", None), &excl));
+    assert!(!is_excluded(&f("Factures", None), &excl));
+    assert!(!is_excluded(&f("INBOX/Documents", None), &excl));
+}
+
+#[tokio::test]
+async fn sous_arbre_exclu_par_composant_insensible_a_la_casse_cas_inbox_trash() {
+    // smoke du 2026-11-06 soir (issue #28) : la boite contient INBOX/Trash
+    // (special-use) ET INBOX/TRASH (majuscules, dossier distinct de "Trash")
+    // avec 3 sous-dossiers — "Trash" dans exclude_folders exclut les deux
+    // sous-arbres, quelle que soit la casse.
+    let mut mail = FakeMail::new(vec![
+        Folder {
+            name: "INBOX".into(),
+            special_use: None,
+        },
+        Folder {
+            name: "INBOX/Trash".into(),
+            special_use: Some("\\Trash".into()),
+        },
+        Folder {
+            name: "INBOX/TRASH".into(),
+            special_use: None,
+        },
+        Folder {
+            name: "INBOX/TRASH/Certificats inscription".into(),
+            special_use: None,
+        },
+        Folder {
+            name: "INBOX/TRASH/Documents".into(),
+            special_use: None,
+        },
+        Folder {
+            name: "INBOX/TRASH/Notes".into(),
+            special_use: None,
+        },
+        Folder {
+            name: "Factures".into(),
+            special_use: None,
+        },
+    ]);
+    mail.add_mail("INBOX", 1, "a@x.fr", "mail recu");
+    mail.add_mail("INBOX/TRASH/Documents", 1, "a@x.fr", "vieux doc");
+    mail.add_mail("INBOX/TRASH/Notes", 1, "a@x.fr", "vieille note");
+    mail.add_mail("Factures", 1, "edf@edf.fr", "Facture octobre");
+    let llm = FakeLlm::ok(vec![profiling_response(vec![profile(
+        "Factures",
+        "factures",
+        &["Facture octobre"],
+    )])]);
+    let mut store = setup_store();
+
+    let stats = run_discovery(&mut mail, &llm, &mut store, "orange", &params())
+        .await
+        .unwrap();
+
+    assert_eq!(store.whitelist("orange").unwrap(), vec!["Factures"]);
+    assert_eq!(stats.folders_seen, 7);
+    assert_eq!(stats.whitelisted, 1);
+    // un seul dossier echantillonne (Factures) : INBOX (source) et tout le
+    // sous-arbre TRASH sont exclus des le LIST, jamais envoyes au LLM
+    assert_eq!(*mail.search_all_calls.borrow(), 1);
+    let prompt = llm.last_user_prompt();
+    assert!(
+        !prompt.contains("TRASH"),
+        "les dossiers exclus ne sont pas envoyes au LLM: {prompt}"
+    );
+    assert!(prompt.contains("Factures"));
 }
 
 #[tokio::test]

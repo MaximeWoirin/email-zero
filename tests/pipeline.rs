@@ -576,6 +576,48 @@ async fn v2_meilleur_candidat_sous_le_seuil_reste_dans_inbox() {
 }
 
 #[tokio::test]
+async fn v2_categorie_hors_whitelist_regle_dediee_mail_laisse_en_place_sans_echec() {
+    // smoke du 2026-11-06 (issue #28) : le LLM propose "INBOX/TRASH" a 0.99, hors
+    // whitelist — le garde-fou l'ecarte, le log porte la regle dediee
+    // `categorie_hors_whitelist_ecartee` (et PAS `seuil_non_atteint` conf 0.0),
+    // le mail reste en place, marque traite, et le poll reussit.
+    let logs = LogCapture::default();
+    let _guard = logs.install();
+    let (mut store, cfg) = setup();
+    let mut mail = FakeMail::new(1);
+    mail.add_mail(1, "spam@x.io", "Doc a la poubelle", "corps");
+    let llm = FakeLlm::new(vec![batch(vec![verdict(
+        1,
+        &[
+            candidate("INBOX/TRASH", 0.99),
+            candidate("INBOX/TRASH/Documents", 0.98),
+        ],
+    )])]);
+
+    let stats = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
+        .await
+        .unwrap();
+
+    assert_eq!(stats.decided, 1);
+    assert_eq!(stats.left_in_inbox, 1);
+    assert!(mail.copies.borrow().is_empty());
+    assert!(store.is_processed("orange", "INBOX", 1, 1).unwrap());
+    let r = store
+        .triage_result("orange", "INBOX", 1, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(r.target_folder, None);
+    assert_eq!(r.action, "none");
+    let log = logs.text();
+    assert!(
+        log.contains("categorie_hors_whitelist_ecartee"),
+        "log: {log}"
+    );
+    assert!(!log.contains("seuil_non_atteint"), "log: {log}");
+    assert!(log.contains("uid=1"), "log: {log}");
+}
+
+#[tokio::test]
 async fn v2_cas_nominal_candidats_multiples_meilleur_trie_et_log_de_routage() {
     let logs = LogCapture::default();
     let _guard = logs.install();
