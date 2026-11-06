@@ -67,7 +67,7 @@ sémantique, pas un copié-collé.
 | `--version`, `--help` | — | Générés par clap. |
 
 Sans `--once`, le worker tourne en daemon : il s'endort entre deux polls selon les
-intervalle de la config, reconnecte chaque boîte à chaque itération et isole l'échec
+intervalles de la config, reconnecte chaque boîte à chaque itération et isole l'échec
 d'une boîte sans s'arrêter. `RUST_LOG` (si définie) prime sur `[log].level`.
 
 ## Déploiement
@@ -101,3 +101,4 @@ LiteLLM) — est détaillée dans [docs/architecture.md](docs/architecture.md).
 - [Architecture](docs/architecture.md) — composants, contrat de triage, stratégie de tests
 - [Configuration](docs/configuration.md) — référence TOML, secrets, déploiement
 - [Spec design v1](docs/superpowers/specs/2026-11-01-email-zero-design.md) — référence de conception
+- [Contribuer](CONTRIBUTING.md) — checklist de PR et règles de contenu de la documentation
