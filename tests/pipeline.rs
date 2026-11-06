@@ -8,15 +8,38 @@ use email_zero::ports::{Folder, JsonChatRequest, LlmClient, MailClient, MailHead
 use email_zero::store::{DescriptionSource, FolderProfile, Store};
 use serde::de::DeserializeOwned;
 
-/// Capture les logs tracing emis pendant un test (thread-local via set_default).
+/// Capture les logs tracing emis pendant un test.
+///
+/// Un SEUL subscriber global est installe une fois par process (via
+/// `set_global_default`) : le cache d'interet des callsites tracing est alors
+/// calcule une fois contre ce subscriber et reste stable. Le subscriber route
+/// chaque evenement vers le buffer du test actif sur le thread courant
+/// (thread-local `ACTIVE_LOG`) ; sans buffer actif, l'evenement est ignore.
+///
+/// Ne PAS utiliser `set_default` (thread-local) par test : avec des tests
+/// paralleles, les dispatchers scopes meurent entre les tests et le cache
+/// d'interet global des callsites devient instable — les logs d'un test
+/// peuvent alors etre silently laisses vides (flake observe en CI).
 #[derive(Clone, Default)]
 struct LogCapture {
     buf: Arc<Mutex<Vec<u8>>>,
 }
 
-impl std::io::Write for LogCapture {
+thread_local! {
+    static ACTIVE_LOG: std::cell::RefCell<Option<Arc<Mutex<Vec<u8>>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Writer global : append dans le buffer actif du thread courant, sinon ignore.
+struct LogSink;
+
+impl std::io::Write for LogSink {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.buf.lock().unwrap().extend_from_slice(buf);
+        let _ = ACTIVE_LOG.try_with(|active| {
+            if let Some(target) = &*active.borrow() {
+                target.lock().unwrap().extend_from_slice(buf);
+            }
+        });
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -24,14 +47,28 @@ impl std::io::Write for LogCapture {
     }
 }
 
+/// Guard de desactivation du buffer actif a la fin du test.
+struct LogGuard;
+
+impl Drop for LogGuard {
+    fn drop(&mut self) {
+        let _ = ACTIVE_LOG.try_with(|active| *active.borrow_mut() = None);
+    }
+}
+
 impl LogCapture {
-    fn install(&self) -> tracing::subscriber::DefaultGuard {
-        let writer = self.clone();
-        let sub = tracing_subscriber::fmt()
-            .with_writer(move || writer.clone())
-            .with_ansi(false)
-            .finish();
-        tracing::subscriber::set_default(sub)
+    fn install(&self) -> LogGuard {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            let sub = tracing_subscriber::fmt()
+                .with_writer(|| LogSink)
+                .with_ansi(false)
+                .finish();
+            // une seule fois par process ; Err si deja set (impossible avec Once)
+            let _ = tracing::subscriber::set_global_default(sub);
+        });
+        let _ = ACTIVE_LOG.try_with(|active| *active.borrow_mut() = Some(self.buf.clone()));
+        LogGuard
     }
 
     fn text(&self) -> String {
