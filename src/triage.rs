@@ -28,6 +28,10 @@ pub enum RoutingRule {
     MeilleurCandidat,
     /// Meilleur candidat sous le seuil configure (ou aucun candidat whitelist) -> INBOX.
     SeuilNonAtteint,
+    /// Tous les candidats du verdict sont hors whitelist -> INBOX, avec une regle
+    /// de log dediee (issue #28) : distincte de `seuil_non_atteint`, qui garde son
+    /// sens de vrai seuil sous la confiance configuree.
+    CategorieHorsWhitelistEcartee,
     /// Aucun verdict LLM pour ce uid du batch -> mail laisse en place.
     PasDeVerdict,
     /// Verdict LLM pour un uid inconnu du batch -> ecarte.
@@ -41,6 +45,7 @@ impl RoutingRule {
         match self {
             RoutingRule::MeilleurCandidat => "meilleur_candidat",
             RoutingRule::SeuilNonAtteint => "seuil_non_atteint",
+            RoutingRule::CategorieHorsWhitelistEcartee => "categorie_hors_whitelist_ecartee",
             RoutingRule::PasDeVerdict => "pas_de_verdict",
             RoutingRule::UidInconnuEcarte => "uid_inconnu_ecarte",
             RoutingRule::DoublonFusionne => "doublon_fusionne",
@@ -149,6 +154,11 @@ pub fn decide(
             RoutingRule::MeilleurCandidat,
         ),
         Some((_, conf)) => (None, conf, RoutingRule::SeuilNonAtteint),
+        // candidats proposes mais tous hors whitelist : regle dediee (issue #28),
+        // un vrai seuil sous la confiance reste loggue `seuil_non_atteint`
+        None if !verdict.candidates.is_empty() => {
+            (None, 0.0, RoutingRule::CategorieHorsWhitelistEcartee)
+        }
         None => (None, 0.0, RoutingRule::SeuilNonAtteint),
     };
 

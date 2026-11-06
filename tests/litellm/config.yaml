@@ -12,6 +12,10 @@
 #                             uid 101 recu en double (candidats fusionnes par le
 #                             pipeline) et uid 102 omis — reproduction du smoke
 #                             du jalon 8 (issue #21) ;
+#   - mock-hors-whitelist   : uid 101 propose vers "INBOX/TRASH" (hors whitelist,
+#                             ecarte par le garde-fou, mail laisse en place) et
+#                             uid 102 vers un dossier whiteliste — smoke du
+#                             2026-11-06 soir (issue #28) ;
 #   - mock-429 / mock-500   : codes d'erreur natifs du proxy via les valeurs
 #                             speciales de mock_response ("litellm.RateLimitError"
 #                             -> HTTP 429, "litellm.InternalServerError" -> 500).
@@ -29,6 +33,11 @@ model_list:
     litellm_params:
       model: openai/mock-missing-verdict
       mock_response: '{"verdicts":[{"uid":101,"summary":"Facture H2R jointe a la commande","priority":2,"is_newsletter":false,"candidates":[{"category":"Factures","confidence":0.99}]},{"uid":101,"summary":"Facture H2R jointe a la commande","priority":2,"is_newsletter":false,"candidates":[{"category":"Documents","confidence":0.99}]}]}'
+
+  - model_name: mock-hors-whitelist
+    litellm_params:
+      model: openai/mock-hors-whitelist
+      mock_response: '{"verdicts":[{"uid":101,"summary":"Document mis a la poubelle","priority":3,"is_newsletter":false,"candidates":[{"category":"INBOX/TRASH","confidence":0.99}]},{"uid":102,"summary":"Facture EDF octobre","priority":2,"is_newsletter":false,"candidates":[{"category":"Factures","confidence":0.97}]}]}'
 
   - model_name: mock-429
     litellm_params:

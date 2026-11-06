@@ -39,7 +39,8 @@ OpenAI-compatible (`reqwest`, `src/clients/llm.rs`), retry/backoff exponentiel c
 Jalon 2c livré : job de découverte des dossiers (`src/discovery.rs`), câblé dans
 le daemon (au premier run ou quand `discovery.interval_secs` est écoulé,
 `--refresh-folders` force) : `LIST` + special-use RFC 6154 → whitelist dans
-`folder` (INBOX et `exclude_folders` exclus, `Archive` conservé), échantillonnage
+`folder` (INBOX et `exclude_folders` exclus, sous-arbres compris et insensible à la
+casse — `Trash` exclut `INBOX/TRASH/Documents` ; `Archive` conservé), échantillonnage
 des `sample_per_folder` derniers headers par dossier (`SEARCH ALL` +
 `BODY.PEEK[HEADER]`, jamais de `\Seen`), **une seule requête LLM** de profilage
 par boîte (prompt `prompts/discovery.md`, schéma strict `PROFILING_SCHEMA`,

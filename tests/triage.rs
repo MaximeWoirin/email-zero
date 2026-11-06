@@ -90,13 +90,46 @@ fn confidence_egale_au_seuil_place_le_mail() {
 }
 
 #[test]
-fn category_hors_whitelist_reste_dans_inbox() {
-    // validation string-match cote Rust : aucun dossier hors whitelist, jamais de creation
+fn category_hors_whitelist_reste_dans_inbox_avec_regle_dediee() {
+    // validation string-match cote Rust : aucun dossier hors whitelist, jamais de
+    // creation. Tous les candidats hors whitelist -> regle de log dediee
+    // `categorie_hors_whitelist_ecartee` (issue #28), pas `seuil_non_atteint`.
     let v = verdict(vec![candidate("NouveauDossier", 0.99)]);
     let d = decide(&whitelist(), &v, 0.8, "copy", false).unwrap();
     assert_eq!(d.target_folder, None);
     assert_eq!(d.action, TriageAction::None);
+    assert_eq!(d.rule, RoutingRule::CategorieHorsWhitelistEcartee);
+    assert!((d.confidence - 0.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn tous_les_candidats_hors_whitelist_regle_dediee_conf_zero() {
+    // smoke du 2026-11-06 (issue #28) : le LLM proposait "INBOX/TRASH" a 0.98-0.99
+    // pour 271 candidats — tous hors whitelist, donc ecartes avec la regle dediee
+    let v = verdict(vec![
+        candidate("INBOX/TRASH", 0.99),
+        candidate("INBOX/TRASH/Documents", 0.98),
+    ]);
+    let d = decide(&whitelist(), &v, 0.8, "copy", false).unwrap();
+    assert_eq!(d.target_folder, None);
+    assert_eq!(d.action, TriageAction::None);
+    assert_eq!(d.rule, RoutingRule::CategorieHorsWhitelistEcartee);
+    assert!((d.confidence - 0.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn candidat_hors_whitelist_plus_valide_sous_seuil_reste_un_vrai_seuil() {
+    // un candidat hors whitelist en tete ne masque pas le vrai seuil : le meilleur
+    // candidat whitelist sous le seuil reste loggue `seuil_non_atteint` (issue #28)
+    let v = verdict(vec![
+        candidate("INBOX/TRASH", 0.99),
+        candidate("Factures", 0.5),
+    ]);
+    let d = decide(&whitelist(), &v, 0.8, "copy", false).unwrap();
+    assert_eq!(d.target_folder, None);
+    assert_eq!(d.action, TriageAction::None);
     assert_eq!(d.rule, RoutingRule::SeuilNonAtteint);
+    assert!((d.confidence - 0.5).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -110,6 +143,10 @@ fn whitelist_string_match_exact_pas_de_match_partiel() {
     let v = verdict(vec![candidate("factures", 0.99)]);
     let d = decide(&whitelist(), &v, 0.8, "copy", false).unwrap();
     assert_eq!(d.target_folder, None, "la casse compte");
+    // proposition 3 de l'issue #28 non retenue : pas de correspondance insensible
+    // a la casse cote triage (contrat v2, issue #21) — la categorie est hors
+    // whitelist, avec la regle dediee
+    assert_eq!(d.rule, RoutingRule::CategorieHorsWhitelistEcartee);
 }
 
 #[test]
