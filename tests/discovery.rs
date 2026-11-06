@@ -1072,3 +1072,171 @@ path = ":memory:"
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- dossiers a description utilisateur : epargnes par le profilage ----
+
+use email_zero::store::DescriptionSource;
+
+#[tokio::test]
+async fn dossier_a_description_utilisateur_est_epargne_par_le_profilage() {
+    // run 1 : profilage LLM classique des deux dossiers. Puis l'utilisateur prend
+    // la main sur Factures (source 'user'). Run 2 (equivalent --refresh-folders) :
+    // Factures n'est ni echantillonne ni envoye au LLM, sa ligne reste intacte,
+    // et Perso est re-profile normalement.
+    let mut mail = FakeMail::new(vec![
+        Folder {
+            name: "Factures".into(),
+            special_use: None,
+        },
+        Folder {
+            name: "Perso".into(),
+            special_use: None,
+        },
+    ]);
+    mail.add_mail("Factures", 1, "edf@edf.fr", "Facture octobre");
+    mail.add_mail("Perso", 1, "maman@x.fr", "Diner samedi");
+    let llm = FakeLlm::ok(vec![
+        profiling_response(vec![
+            profile("Factures", "factures llm", &["Facture octobre"]),
+            profile("Perso", "mails perso", &["Diner samedi"]),
+        ]),
+        // run 2 : le LLM ne recoit plus Factures, il ne renvoie que Perso
+        profiling_response(vec![profile("Perso", "mails perso v2", &["Diner samedi"])]),
+    ]);
+    let mut store = setup_store();
+
+    run_discovery(&mut mail, &llm, &mut store, "orange", &params())
+        .await
+        .unwrap();
+    // saisie manuelle SANS exemples : les exemples du profilage LLM sont purges
+    store
+        .set_user_folder_description(
+            "orange",
+            "Factures",
+            "factures et recus UNIQUEMENT, jamais de marketing evenementiel",
+            &[],
+        )
+        .unwrap();
+    let avant = store.folder_profile("orange", "Factures").unwrap().unwrap();
+    assert_eq!(avant.description_source, DescriptionSource::User);
+    assert!(
+        avant.examples.is_empty(),
+        "exemples LLM purges a la saisie manuelle: {:?}",
+        avant.examples
+    );
+
+    let stats = run_discovery(&mut mail, &llm, &mut store, "orange", &params())
+        .await
+        .unwrap();
+    assert_eq!(stats.status, "ok");
+
+    let apres = store.folder_profile("orange", "Factures").unwrap().unwrap();
+    assert_eq!(
+        apres.description, avant.description,
+        "la description manuelle n'est pas modifiee par le run 2"
+    );
+    assert!(
+        apres.examples.is_empty(),
+        "les exemples purges a la saisie manuelle ne reviennent pas au run 2: {:?}",
+        apres.examples
+    );
+    assert_eq!(apres.description_source, DescriptionSource::User);
+    assert_eq!(
+        apres.updated_at, avant.updated_at,
+        "ligne non touchee du tout"
+    );
+    // Factures n'a pas ete envoye au LLM au run 2 (uniquement Perso)
+    let prompt = llm.last_user_prompt();
+    assert!(
+        !prompt.contains("Factures"),
+        "dossier a description user hors du prompt LLM: {prompt}"
+    );
+    assert!(prompt.contains("Perso"));
+    // et il n'a pas ete re-echantillonne : 2 SEARCH ALL au run 1, 1 seul au run 2
+    assert_eq!(*mail.search_all_calls.borrow(), 3);
+    // Perso, lui, a bien ete re-profile par le LLM
+    let p = store.folder_profile("orange", "Perso").unwrap().unwrap();
+    assert_eq!(p.description.as_deref(), Some("mails perso v2"));
+    assert_eq!(p.description_source, DescriptionSource::Llm);
+}
+
+#[tokio::test]
+async fn dossier_a_description_utilisateur_conserve_aussi_en_fallback_llm_indisponible() {
+    // meme protection quand le LLM tombe en panne au run 2 (statut fallback) :
+    // la description manuelle survit.
+    let mut mail = FakeMail::new(vec![
+        Folder {
+            name: "Factures".into(),
+            special_use: None,
+        },
+        Folder {
+            name: "Perso".into(),
+            special_use: None,
+        },
+    ]);
+    mail.add_mail("Factures", 1, "edf@edf.fr", "Facture octobre");
+    mail.add_mail("Perso", 1, "maman@x.fr", "Diner samedi");
+    let llm = FakeLlm::new(vec![
+        Ok(profiling_response(vec![
+            profile("Factures", "factures llm", &["Facture octobre"]),
+            profile("Perso", "mails perso", &["Diner samedi"]),
+        ])),
+        Err(Error::Llm("LLM indisponible (test)".into())),
+    ]);
+    let mut store = setup_store();
+
+    run_discovery(&mut mail, &llm, &mut store, "orange", &params())
+        .await
+        .unwrap();
+    store
+        .set_user_folder_description("orange", "Factures", "desc manuelle figee", &[])
+        .unwrap();
+    let avant = store.folder_profile("orange", "Factures").unwrap().unwrap();
+
+    let stats = run_discovery(&mut mail, &llm, &mut store, "orange", &params())
+        .await
+        .expect("fallback, pas d'erreur propagee");
+    assert_eq!(stats.status, "fallback");
+
+    let apres = store.folder_profile("orange", "Factures").unwrap().unwrap();
+    assert_eq!(apres.description, avant.description);
+    assert!(
+        apres.examples.is_empty(),
+        "exemples purges, toujours vides en fallback"
+    );
+    assert_eq!(apres.description_source, DescriptionSource::User);
+    // Perso a pris le fallback (echantillons bruts, pas de description)
+    let p = store.folder_profile("orange", "Perso").unwrap().unwrap();
+    assert_eq!(p.description, None);
+    assert_eq!(p.examples, vec!["Diner samedi".to_string()]);
+}
+
+#[tokio::test]
+async fn tous_les_dossiers_en_source_user_plus_de_requete_llm_du_tout() {
+    // cas limite : si tous les dossiers whitelistes sont en source 'user', aucun
+    // echantillon n'est envoye au LLM (plus de requete de profilage).
+    let mut mail = FakeMail::new(vec![Folder {
+        name: "Factures".into(),
+        special_use: None,
+    }]);
+    mail.add_mail("Factures", 1, "edf@edf.fr", "Facture octobre");
+    let llm = FakeLlm::ok(vec![]); // aucune reponse scriptee : tout appel echouerait
+    let mut store = setup_store();
+    store
+        .upsert_folders("orange", &[("Factures", None, false)])
+        .unwrap();
+    store
+        .set_user_folder_description("orange", "Factures", "desc manuelle", &[])
+        .unwrap();
+
+    let stats = run_discovery(&mut mail, &llm, &mut store, "orange", &params())
+        .await
+        .unwrap();
+
+    assert_eq!(stats.status, "ok");
+    assert_eq!(*llm.schema_calls.borrow(), 0, "aucune requete LLM");
+    assert_eq!(*mail.search_all_calls.borrow(), 0, "aucun echantillonnage");
+    let p = store.folder_profile("orange", "Factures").unwrap().unwrap();
+    assert_eq!(p.description.as_deref(), Some("desc manuelle"));
+    assert_eq!(p.description_source, DescriptionSource::User);
+}

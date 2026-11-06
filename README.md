@@ -64,11 +64,43 @@ sémantique, pas un copié-collé.
 | `--dry-run` | off | Évalue et affiche les actions prévues sans rien écrire sur le serveur. |
 | `--once` | off | Une seule exécution puis sortie (manuel, cron, timer systemd). |
 | `--refresh-folders` | off | Force le rafraîchissement des profils de dossiers. |
+| `--list-folders` | off | Affiche l'état des dossiers du state store (source `llm`/`user`, whitelist, description, exemples, `updated_at`) puis quitte — sans connexion IMAP ni LLM. |
+| `--describe-folder <DOSSIER>` | off | Définit manuellement la description d'un dossier (affiche l'état actuel de chaque boîte cible, puis enregistre la nouvelle description en source `user`) puis quitte. Les exemples du profilage LLM sont **purgés** à la saisie, sauf si `--describe-examples` est fourni. |
+| `--describe-text <TEXTE>` | — | Texte de la nouvelle description pour `--describe-folder` (bornée à 2 000 caractères) ; sinon la description est lue sur stdin (multiligne, jusqu'à EOF). |
+| `--describe-examples <EX1;EX2;…>` | — | Exemples de sujets fournis avec `--describe-folder`, séparés par `;` (10 max) ; sans cette option, les exemples existants sont purgés. |
+| `--reset-folder-description <DOSSIER>` | off | Rend la main au profilage LLM (retour à la source `llm`) : la prochaine découverte re-profile le dossier. |
+| `--mailbox <ID>` | toutes les boîtes | Restreint une commande de gestion des dossiers (`--list-folders`, `--describe-folder`, `--reset-folder-description`) à cette boîte. |
 | `--version`, `--help` | — | Générés par clap. |
 
 Sans `--once`, le worker tourne en daemon : il s'endort entre deux polls selon les
 intervalles de la config, reconnecte chaque boîte à chaque itération et isole l'échec
 d'une boîte sans s'arrêter. `RUST_LOG` (si définie) prime sur `[log].level`.
+
+### Gestion manuelle des descriptions de dossiers
+
+Les descriptions de dossiers produites par la découverte (profilage LLM) pilotent le
+triage : elles sont injectées telles quelles dans le prompt de triage. Quand un profil
+ne convient pas, on peut reprendre la main manuellement :
+
+```sh
+email-zero --list-folders                                              # état des dossiers (source llm/user)
+email-zero --describe-folder Factures --describe-text "factures et reçus uniquement, jamais de marketing"
+email-zero --describe-folder IMPORTANT --describe-text "..." --describe-examples "Alerte banque;Relance impôt"
+echo "..." | email-zero --describe-folder Factures                     # ou saisie / pipe sur stdin (multiligne, EOF)
+email-zero --reset-folder-description Factures                         # retour au profilage LLM
+```
+
+Une description en source `user` n'est **jamais écrasée** par une découverte ultérieure
+(`--refresh-folders` ou intervalle compris) : elle apparaît telle quelle dans le prompt
+de triage au run suivant. À la saisie manuelle, les **exemples du profilage LLM sont
+purgés** (jamais laissés figés en contradiction avec la description) ; `--describe-examples`
+permet de fournir explicitement les exemples à la place. `--reset-folder-description`
+repasse la source à `llm` (la prochaine découverte re-profile description et exemples).
+Ces commandes agissent sur le state store seul (pas de connexion IMAP ni LLM) ; le
+dossier doit être connu du state store de **chaque** boîte cible — lancer d'abord un run
+de découverte si `--list-folders` est vide. Sans `--mailbox`, elles s'appliquent à toutes
+les boîtes configurées, après vérification que le dossier y existe partout (pas d'écriture
+partielle).
 
 ## Déploiement
 

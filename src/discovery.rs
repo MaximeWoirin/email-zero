@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
 
@@ -220,9 +220,23 @@ async fn run_discovery_inner<M: MailClient, L: LlmClient>(
     store.upsert_folders(mailbox, &rows)?;
     let whitelisted = rows.iter().filter(|(_, _, ex)| !*ex).count() as u64;
 
+    // Dossiers dont la description est saisie manuellement (source `user`) :
+    // epargnes par le profilage — ni echantillonnes, ni envoyes au LLM, leur
+    // ligne `folder` (description, exemples, source) reste intacte.
+    let user_folders: HashSet<String> =
+        store.user_described_folders(mailbox)?.into_iter().collect();
+    if !user_folders.is_empty() {
+        tracing::info!(
+            mailbox,
+            preserved = user_folders.len(),
+            dossiers = ?user_folders,
+            "dossiers a description manuelle (source user) epargnes par le profilage"
+        );
+    }
+
     let mut samples = Vec::new();
     for f in &folders {
-        if is_excluded(f, &params.exclude_folders) {
+        if is_excluded(f, &params.exclude_folders) || user_folders.contains(&f.name) {
             continue;
         }
         samples.push(sample_folder(mail, &f.name, params.sample_per_folder).await?);
@@ -290,8 +304,10 @@ async fn run_discovery_inner<M: MailClient, L: LlmClient>(
     }
 
     // Persistance des profils dans `folder` (description + exemples + updated_at).
+    // Les dossiers en source `user` sont sautes : set_folder_profile les protegerait
+    // de toute facon, mais ne pas les toucher du tout preserve aussi updated_at.
     for f in &folders {
-        if is_excluded(f, &params.exclude_folders) {
+        if is_excluded(f, &params.exclude_folders) || user_folders.contains(&f.name) {
             continue;
         }
         let sample = samples.iter().find(|s| s.name == f.name);

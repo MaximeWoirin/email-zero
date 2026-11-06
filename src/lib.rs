@@ -2,6 +2,7 @@ pub mod clients;
 pub mod config;
 pub mod discovery;
 pub mod error;
+pub mod folders;
 pub mod pipeline;
 pub mod ports;
 pub mod retry;
