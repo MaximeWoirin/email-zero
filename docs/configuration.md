@@ -2,7 +2,7 @@
 
 Référence complète du fichier de config TOML. [`config.example.toml`](../config.example.toml)
 à la racine du dépôt est l'exemple exécutable — il est validé par un test dédié
-(`tests/example_config.rs`), donc toujours à jour. Copier-le en `config.toml`
+(`tests/example_config.rs`), donc toujours à jour. Copiez-le en `config.toml`
 (ignoré par Git) et remplir les **noms** de variables d'env : aucun secret dans le
 fichier de config, uniquement des références résolues au démarrage
 (voir [Gestion des secrets](#gestion-des-secrets)).
@@ -22,7 +22,7 @@ fichier de config, uniquement des références résolues au démarrage
 | `poll_interval_secs` | entier | `300` | Intervalle entre deux polls en mode daemon. |
 
 **Règle** : exactement **une** source de secret parmi `password_env`,
-`password_cmd`, `password` — zéro ou plusieurs = erreur de validation nommement
+`password_cmd`, `password` — zéro ou plusieurs = erreur de validation nommant
 la boîte.
 
 ## `[llm]` — endpoint LLM (OpenAI-compatible)
@@ -61,7 +61,7 @@ la boîte.
 
 | Clé | Type | Défaut | Rôle |
 |-----|------|--------|------|
-| `action` | string | `"copy"` | Action appliquée : `"copy"` ou `"move"` (les deux écriquent dans les dossiers IMAP ; `move` nettoie l'INBOX). |
+| `action` | string | `"copy"` | Action appliquée : `"copy"` ou `"move"` (les deux écrivent dans les dossiers IMAP ; `move` nettoie l'INBOX). |
 | `confidence_threshold` | réel | `0.8` | Seuil de confiance dans [0, 1] : en dessous, le mail reste dans INBOX. |
 | `prompt_path` | string | `"prompts/triage.md"` | Prompt système du triage (artefact versionné, isolé du code). |
 
@@ -114,12 +114,14 @@ Appliquées au chargement (`Config::parse`) :
 - `id` de mailbox **uniques** (doublon = erreur) ;
 - exactement une source de secret par boîte (`password_env` / `password_cmd` / `password`) ;
 - `triage.action` ∈ `{"copy", "move"}` ;
-- `triage.confidence_threshold` ∈ [0, 1] ;
-- `llm.base_url` doit commencer par `https://` — la clé API est transmise en bearer,
-  un `http://` la transmettrait en clair sur le réseau. Exception : `http://`
-  accepté pour le loopback (`127.0.0.1`, `localhost`, `::1`/`[::1]`) **et pour
-  `host.docker.internal`** (proxy LLM sur l'hôte Docker, ex. Ollama/LiteLLM local
-  en compose via `extra_hosts`).
+- `triage.confidence_threshold` ∈ [0, 1].
+
+`llm.base_url` est en outre validée à la **construction du client LLM**
+(`validate_base_url`, `src/clients/llm.rs`), pas au parsing de la config : elle doit
+commencer par `https://` — la clé API est transmise en bearer, un `http://` la
+transmettrait en clair sur le réseau. Exception : `http://` accepté pour le loopback
+(`127.0.0.1`, `localhost`, `::1`/`[::1]`) **et pour `host.docker.internal`** (proxy LLM
+sur l'hôte Docker, ex. Ollama/LiteLLM local en compose via `extra_hosts`).
 
 ## Déploiement
 

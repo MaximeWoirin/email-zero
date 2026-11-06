@@ -46,7 +46,7 @@ in-memory ou des mini-serveurs sur loopback.
 | `src/config.rs` | Parsing et validation du TOML, références de secrets (`password_env` / `password_cmd` / `password`), `Debug` masqué des champs secrets. |
 | `src/ports.rs` | Traits injectés `MailClient` / `LlmClient` et types échangés (`Folder`, `MailHeader`, `ParsedMail`, `JsonChatRequest`…). |
 | `src/clients/imap.rs` | Client IMAP réel (`async-imap` + rustls + racines webpki) : fetchs en `BODY.PEEK[]` pour ne jamais poser `\Seen`, `UIDVALIDITY` lu sur la réponse SELECT. |
-| `src/clients/llm.rs` | Client LLM réel (`reqwest`) : `POST {base_url}/chat/completions`, validation de `base_url` (https exigé hors loopback). |
+| `src/clients/llm.rs` | Client LLM réel (`reqwest`) : `POST {base_url}/chat/completions`, validation de `base_url` (https exigé, loopback et `host.docker.internal` exceptés). |
 | `src/retry.rs` | Backoff exponentiel configuré (`max_attempts`, `backoff_base_secs`), fonction pure testable sans dormir. |
 | `src/error.rs` | Type d'erreur unique (`thiserror`). |
 
