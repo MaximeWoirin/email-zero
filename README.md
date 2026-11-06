@@ -62,9 +62,12 @@ prod), publie sur le loopback uniquement, configure avec `mock_response`
 (config `tests/litellm/config.yaml`, suite `#[ignore]` dans `tests/llm_litellm.rs`) :
 surface d'API reelle (bearer, codes d'erreur natifs du proxy 400/429/500, format
 de reponse) sans fournisseur, sans reseau externe, sans secret, contenu
-deterministe par modele (`mock-ok` batch complet, `mock-missing-verdict`
-reproduction du smoke #21 avec uid en double/omis). Objectif : attraper en CI
-les divergences fake/proxy reel sur la reponse LLM avant le smoke reel.
+deterministe par modele au format du contrat v2 (`candidates`, #21) :
+`mock-ok` batch complet, `mock-missing-verdict` reproduction du smoke #21
+(uid en double/omis), et un test pipeline (fake IMAP + proxy reel) qui valide
+de bout en bout la gestion de la divergence (fusion des candidats, mail omis
+laisse en place, poll reussi). Objectif : attraper en CI les divergences
+fake/proxy reel sur la reponse LLM avant le smoke reel.
 
 Jalon 3 en cours : conteneur + déploiement POC. `Dockerfile` multi-stage
 (cross-compile `aarch64-unknown-linux-gnu` pour le Pi 3 B+ depuis n'importe quel

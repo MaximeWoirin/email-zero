@@ -4,11 +4,14 @@
 # (LITELLM_MASTER_KEY) dans le job CI `llm-litellm` ; la valeur de test est une
 # chaine factice, pas un secret.
 #
-# Un modele moque par scenario (la chaine mock_response est fixe par modele) :
+# Un modele moque par scenario (la chaine mock_response est fixe par modele).
+# Les reponses suivent le contrat de triage v2 (issue #21, BATCH_SCHEMA v2) :
+# chaque verdict porte la liste ordonnee `candidates` [{category, confidence}].
 #   - mock-ok               : batch complet de verdicts (chemin heureux) ;
 #   - mock-missing-verdict  : reponse couvrant une partie du batch seulement,
-#                             uid 101 recu en double et uid 102 omis — reproduction
-#                             du smoke du jalon 8 (issue #21) ;
+#                             uid 101 recu en double (candidats fusionnes par le
+#                             pipeline) et uid 102 omis — reproduction du smoke
+#                             du jalon 8 (issue #21) ;
 #   - mock-429 / mock-500   : codes d'erreur natifs du proxy via les valeurs
 #                             speciales de mock_response ("litellm.RateLimitError"
 #                             -> HTTP 429, "litellm.InternalServerError" -> 500).
@@ -20,12 +23,12 @@ model_list:
     litellm_params:
       # provider bidon, jamais appele : mock_response court-circuite l'appel
       model: openai/mock-ok
-      mock_response: '{"verdicts":[{"uid":101,"category":"Factures","priority":2,"summary":"Facture EDF octobre","is_newsletter":false,"confidence":0.97},{"uid":102,"category":"Archive","priority":4,"summary":"Rapport hebdomadaire","is_newsletter":false,"confidence":0.9}]}'
+      mock_response: '{"verdicts":[{"uid":101,"summary":"Facture EDF octobre","priority":2,"is_newsletter":false,"candidates":[{"category":"Factures","confidence":0.97}]},{"uid":102,"summary":"Rapport hebdomadaire","priority":4,"is_newsletter":false,"candidates":[{"category":"Archive","confidence":0.9}]}]}'
 
   - model_name: mock-missing-verdict
     litellm_params:
       model: openai/mock-missing-verdict
-      mock_response: '{"verdicts":[{"uid":101,"category":"Factures","priority":2,"summary":"Facture H2R jointe a la commande","is_newsletter":false,"confidence":0.99},{"uid":101,"category":"Documents","priority":2,"summary":"Facture H2R jointe a la commande","is_newsletter":false,"confidence":0.99}]}'
+      mock_response: '{"verdicts":[{"uid":101,"summary":"Facture H2R jointe a la commande","priority":2,"is_newsletter":false,"candidates":[{"category":"Factures","confidence":0.99}]},{"uid":101,"summary":"Facture H2R jointe a la commande","priority":2,"is_newsletter":false,"candidates":[{"category":"Documents","confidence":0.99}]}]}'
 
   - model_name: mock-429
     litellm_params:
