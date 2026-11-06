@@ -26,6 +26,61 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + std::fmt::
 /// Session IMAP boxee sur un stream quelconque (TLS ou TCP clair).
 pub type BoxSession = Session<Box<dyn DebugStream>>;
 
+/// Wrapper de stream : un EOF (0 octet lu) est transforme en erreur io
+/// `UnexpectedEof`. Sans cela, async-imap 0.12 traite un EOF avec buffer vide
+/// comme une fin de stream PROPRE (`Poll::Ready(None)`) : `UID SEARCH` sur une
+/// connexion fermee cote serveur retournerait `Ok([])` au lieu d'une erreur, et
+/// la perte de connexion ne serait detectee qu'en TLS (erreur rustls
+/// "peer closed connection without sending TLS close_notify"). Avec ce wrapper,
+/// toute fermeture serveur (TLS ou TCP clair) remonte `Error::Io` ->
+/// `ImapConnectionLost` (issue #30).
+#[derive(Debug)]
+struct EofAsError<S> {
+    inner: S,
+}
+
+impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for EofAsError<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let r = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let std::task::Poll::Ready(Ok(())) = &r {
+            if buf.filled().len() == before {
+                return std::task::Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "connexion fermee par le serveur (EOF)",
+                )));
+            }
+        }
+        r
+    }
+}
+
+impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for EofAsError<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
 /// Construit le connecteur TLS (rustls + racines webpki + provider ring).
 pub fn tls_connector() -> Result<TlsConnector> {
     let mut roots = RootCertStore::empty();
@@ -61,7 +116,7 @@ pub async fn connect(mb: &MailboxConfig, password: &str) -> Result<BoxSession> {
                 ))
             })?
             .map_err(|e| Error::Imap(format!("handshake TLS {addr}: {e}")))?;
-        let mut client = Client::new(Box::new(tls) as Box<dyn DebugStream>);
+        let mut client = Client::new(Box::new(EofAsError { inner: tls }) as Box<dyn DebugStream>);
         let _greeting = tokio::time::timeout(CONNECT_PHASE_TIMEOUT, client.read_response())
             .await
             .map_err(|_| Error::Imap(format!("timeout greeting ({CONNECT_PHASE_TIMEOUT:?})")))?
@@ -73,7 +128,7 @@ pub async fn connect(mb: &MailboxConfig, password: &str) -> Result<BoxSession> {
                 .map_err(|(e, _c)| Error::Imap(format!("login {}: {e}", mb.username)))?;
         Ok(session)
     } else {
-        let mut client = Client::new(Box::new(tcp) as Box<dyn DebugStream>);
+        let mut client = Client::new(Box::new(EofAsError { inner: tcp }) as Box<dyn DebugStream>);
         let _greeting = tokio::time::timeout(CONNECT_PHASE_TIMEOUT, client.read_response())
             .await
             .map_err(|_| Error::Imap(format!("timeout greeting ({CONNECT_PHASE_TIMEOUT:?})")))?
@@ -113,23 +168,54 @@ fn parse_raw_mail(raw: &[u8], uid: u32) -> Result<ParsedMail> {
     })
 }
 
+/// Traduit une erreur async-imap en `Error` : une erreur de transport (io, EOF/BYE
+/// du serveur) devient `ImapConnectionLost` (session morte, non retentable ici —
+/// le runner reconnecte, issue #30) ; NO/BAD/parse restent des `Error::Imap`.
+fn map_imap_err(e: async_imap::error::Error) -> Error {
+    use async_imap::error::Error as ImapError;
+    match e {
+        ImapError::Io(io) => Error::ImapConnectionLost(format!("io: {io}")),
+        ImapError::ConnectionLost => {
+            Error::ImapConnectionLost("connexion fermee par le serveur".into())
+        }
+        other => Error::Imap(other.to_string()),
+    }
+}
+
 /// Boucle de retry inlinee : semantique identique a `retry::with_retry` (max_attempts,
 /// backoff exponentiel borne, warn loggue, testee dans tests/retry.rs) mais ecrite en
 /// macro bloc pour pouvoir emprunter `&mut self.session` a chaque tentative — une
 /// fonction generique avec closure ne compile pas sur ce borrow.
+/// Chaque tentative est bornee par `self.read_timeout` (issue #30) : une lecture
+/// bloquee (serveur qui a ferme sans close_notify) echoue vite au lieu d'attendre
+/// les timers TCP (~4 min 30 observees). Une `ImapConnectionLost` (timeout, io,
+/// BYE) n'est PAS retentee sur la meme session : elle remonte pour reconnexion.
 macro_rules! retried {
     ($self:ident, $session:ident, $body:block) => {{
         let retry = $self.retry.clone();
+        let timeout = $self.read_timeout;
         let mut attempt = 0u32;
         loop {
             attempt += 1;
             let result: Result<_> = {
                 let $session: &mut BoxSession = &mut $self.session;
-                $body
+                if timeout.is_zero() {
+                    $body
+                } else {
+                    match tokio::time::timeout(timeout, async { $body }).await {
+                        Ok(r) => r,
+                        Err(_) => Err(Error::ImapConnectionLost(format!(
+                            "timeout de {timeout:?} sur une operation IMAP (session probablement morte)"
+                        ))),
+                    }
+                }
             };
             match result {
                 Ok(v) => break Ok(v),
                 Err(e) => {
+                    if matches!(e, Error::ImapConnectionLost(_)) {
+                        break Err(e);
+                    }
                     if attempt >= retry.max_attempts.max(1) {
                         break Err(e);
                     }
@@ -153,16 +239,20 @@ macro_rules! retried {
 pub struct ImapMailClient {
     session: BoxSession,
     retry: RetryConfig,
+    /// Borne de chaque operation IMAP (commande + lecture de reponse), issue #30 ;
+    /// `Duration::ZERO` = desactive.
+    read_timeout: std::time::Duration,
     selected: Option<String>,
     /// UIDVALIDITY lue sur la reponse du SELECT du dossier courant.
     uidvalidity_cache: Option<u32>,
 }
 
 impl ImapMailClient {
-    pub fn new(session: BoxSession, retry: RetryConfig) -> Self {
+    pub fn new(session: BoxSession, retry: RetryConfig, read_timeout: std::time::Duration) -> Self {
         Self {
             session,
             retry,
+            read_timeout,
             selected: None,
             uidvalidity_cache: None,
         }
@@ -180,7 +270,7 @@ impl ImapMailClient {
             session
                 .select(folder_arg.clone())
                 .await
-                .map_err(|e| Error::Imap(e.to_string()))
+                .map_err(map_imap_err)
         })?;
         self.uidvalidity_cache = mb.uid_validity;
         self.selected = Some(folder.to_string());
@@ -191,14 +281,8 @@ impl ImapMailClient {
 impl MailClient for ImapMailClient {
     async fn list_folders(&mut self) -> Result<Vec<Folder>> {
         let names = retried!(self, session, {
-            let stream = session
-                .list(None, Some("*"))
-                .await
-                .map_err(|e| Error::Imap(e.to_string()))?;
-            stream
-                .try_collect::<Vec<_>>()
-                .await
-                .map_err(|e| Error::Imap(e.to_string()))
+            let stream = session.list(None, Some("*")).await.map_err(map_imap_err)?;
+            stream.try_collect::<Vec<_>>().await.map_err(map_imap_err)
         })?;
         let mut out = Vec::with_capacity(names.len());
         for n in names {
@@ -242,10 +326,7 @@ impl MailClient for ImapMailClient {
     async fn search_unseen(&mut self, folder: &str) -> Result<Vec<u32>> {
         self.select(folder).await?;
         let set = retried!(self, session, {
-            session
-                .uid_search("UNSEEN")
-                .await
-                .map_err(|e| Error::Imap(e.to_string()))
+            session.uid_search("UNSEEN").await.map_err(map_imap_err)
         })?;
         let mut uids: Vec<u32> = set.into_iter().collect();
         uids.sort_unstable();
@@ -255,10 +336,7 @@ impl MailClient for ImapMailClient {
     async fn search_all(&mut self, folder: &str) -> Result<Vec<u32>> {
         self.select(folder).await?;
         let set = retried!(self, session, {
-            session
-                .uid_search("ALL")
-                .await
-                .map_err(|e| Error::Imap(e.to_string()))
+            session.uid_search("ALL").await.map_err(map_imap_err)
         })?;
         let mut uids: Vec<u32> = set.into_iter().collect();
         uids.sort_unstable();
@@ -273,11 +351,8 @@ impl MailClient for ImapMailClient {
             let stream = session
                 .uid_fetch(uid.to_string(), "BODY.PEEK[HEADER]")
                 .await
-                .map_err(|e| Error::Imap(e.to_string()))?;
-            let fetches: Vec<_> = stream
-                .try_collect()
-                .await
-                .map_err(|e| Error::Imap(e.to_string()))?;
+                .map_err(map_imap_err)?;
+            let fetches: Vec<_> = stream.try_collect().await.map_err(map_imap_err)?;
             fetches
                 .into_iter()
                 .find(|f| f.uid == Some(uid))
@@ -315,11 +390,8 @@ impl MailClient for ImapMailClient {
             let stream = session
                 .uid_fetch(uid.to_string(), "BODY.PEEK[]")
                 .await
-                .map_err(|e| Error::Imap(e.to_string()))?;
-            let fetches: Vec<_> = stream
-                .try_collect()
-                .await
-                .map_err(|e| Error::Imap(e.to_string()))?;
+                .map_err(map_imap_err)?;
+            let fetches: Vec<_> = stream.try_collect().await.map_err(map_imap_err)?;
             fetches
                 .into_iter()
                 .find(|f| f.uid == Some(uid))
@@ -336,7 +408,7 @@ impl MailClient for ImapMailClient {
             session
                 .uid_copy(uid.to_string(), &target_arg)
                 .await
-                .map_err(|e| Error::Imap(e.to_string()))
+                .map_err(map_imap_err)
         })
     }
 
@@ -347,7 +419,13 @@ impl MailClient for ImapMailClient {
             session
                 .uid_mv(uid.to_string(), &target_arg)
                 .await
-                .map_err(|e| Error::Imap(e.to_string()))
+                .map_err(map_imap_err)
+        })
+    }
+
+    async fn noop(&mut self) -> Result<()> {
+        retried!(self, session, {
+            session.noop().await.map_err(map_imap_err)
         })
     }
 }

@@ -37,9 +37,16 @@ rate_limit_per_min = 0
 max_attempts = 3
 backoff_base_secs = 5
 
+[imap]
+timeout_secs = 30              # timeout de lecture de chaque operation IMAP (0 = desactive, deconseille :
+                               # une connexion fermee silencieusement bloque sinon jusqu'aux timers TCP, ~4 min 30)
+keepalive_secs = 45            # NOOP periodique pendant les appels LLM pour garder la session active (0 = desactive)
+max_reconnects = 3             # reconnexions avec reprise en cours de poll avant d'abandonner
+                               # (la reprise repart du state store, sans doublon)
+
 [imap.retry]
 max_attempts = 3
-backoff_base_secs = 2
+backoff_base_secs = 2          # backoff aussi entre deux reconnexions
 
 [triage]
 action = "copy"                  # "copy" | "move"

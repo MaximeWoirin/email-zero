@@ -1,6 +1,8 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 use crate::config::Config;
@@ -87,6 +89,9 @@ pub struct PipelineConfig {
     pub temperature: f32,
     pub top_p: f32,
     pub max_tokens: u32,
+    /// NOOP IMAP periodique pendant les appels LLM (None = desactive,
+    /// `imap.keepalive_secs = 0`, issue #30).
+    pub keepalive: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -131,7 +136,40 @@ pub fn pipeline_config_for(
         temperature: cfg.llm.temperature,
         top_p: cfg.llm.top_p,
         max_tokens: cfg.llm.max_tokens,
+        keepalive: (cfg.imap_retry.keepalive_secs > 0)
+            .then(|| Duration::from_secs(cfg.imap_retry.keepalive_secs)),
     })
+}
+
+/// Appel LLM avec keepalive IMAP : pendant toute la duree de l'appel, un NOOP est
+/// emis toutes les `every` pour empecher le serveur de juger la session inactive
+/// (fermeture silencieuse cote Orange observee en smoke, issue #30). Une perte de
+/// connexion detectee par le NOOP remonte immediatement (la prochaine operation
+/// IMAP echouerait de toute facon et declencherait la reconnexion).
+pub async fn call_llm_with_keepalive<M: MailClient, L: LlmClient, T: DeserializeOwned>(
+    mail: &mut M,
+    llm: &L,
+    req: JsonChatRequest,
+    schema: &str,
+    every: Duration,
+) -> Result<T> {
+    let call = llm.chat_json_schema::<T>(req, schema);
+    tokio::pin!(call);
+    let timer = tokio::time::sleep(every);
+    tokio::pin!(timer);
+    loop {
+        tokio::select! {
+            r = &mut call => return r,
+            _ = &mut timer => {
+                match mail.noop().await {
+                    Ok(()) => {}
+                    Err(e @ Error::ImapConnectionLost(_)) => return Err(e),
+                    Err(e) => tracing::warn!(error = %e, "keepalive NOOP echoue, on continue"),
+                }
+                timer.as_mut().reset(tokio::time::Instant::now() + every);
+            }
+        }
+    }
 }
 
 /// Tronque `body` a `max_chars` caracteres (borne sur les chars, pas les octets, pour
@@ -250,7 +288,10 @@ pub async fn run<M: MailClient, L: LlmClient>(
             max_tokens: cfg.max_tokens,
             response_format_json_schema: Some(BATCH_SCHEMA.into()),
         };
-        let batch: BatchVerdicts = llm.chat_json_schema(req, BATCH_SCHEMA).await?;
+        let batch: BatchVerdicts = match cfg.keepalive {
+            Some(every) => call_llm_with_keepalive(mail, llm, req, BATCH_SCHEMA, every).await?,
+            None => llm.chat_json_schema(req, BATCH_SCHEMA).await?,
+        };
 
         // Validation de la reponse par rapport au batch (contrat v2) : un verdict pour
         // un uid inconnu du batch est ecarte (warn), deux verdicts pour un meme uid

@@ -54,6 +54,11 @@ pub trait MailClient {
     async fn fetch_body(&mut self, folder: &str, uid: u32) -> Result<ParsedMail>;
     async fn copy(&mut self, folder: &str, uid: u32, target: &str) -> Result<()>;
     async fn r#move(&mut self, folder: &str, uid: u32, target: &str) -> Result<()>;
+    /// NOOP (RFC 3501 §6.1.1) : maintient la session active pendant les idles
+    /// prolonges (appels LLM, issue #30) ; ne modifie aucun flag.
+    async fn noop(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Toute requete LLM passe par ce trait.

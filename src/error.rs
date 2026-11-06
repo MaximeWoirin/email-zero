@@ -23,6 +23,11 @@ pub enum Error {
     LlmNonRetryable(String),
     #[error("imap: {0}")]
     Imap(String),
+    /// Connexion IMAP perdue (EOF/BYE du serveur, erreur io, ou timeout de
+    /// lecture) : non retentable sur la meme session, declenche une reconnexion
+    /// avec reprise au niveau du runner (issue #30).
+    #[error("imap: connexion perdue: {0}")]
+    ImapConnectionLost(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

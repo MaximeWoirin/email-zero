@@ -98,6 +98,7 @@ async fn connect_client() -> ImapMailClient {
             max_attempts: 1,
             backoff_base_secs: 0,
         },
+        std::time::Duration::from_secs(30),
     )
 }
 

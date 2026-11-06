@@ -282,3 +282,54 @@ fn max_body_chars_explicite_dans_le_toml() {
     let cfg = Config::parse(&toml_str).expect("config valide");
     assert_eq!(cfg.llm.max_body_chars, 500);
 }
+
+#[test]
+fn imap_resilience_defaults_quand_section_imap_absente() {
+    let minimal = r#"
+[[mailbox]]
+id = "solo"
+host = "127.0.0.1"
+port = 1143
+username = "a@b.c"
+password_env = "EZ_PW"
+
+[llm]
+base_url = "http://localhost:4000/v1"
+api_key_env = "EZ_LLM_API_KEY"
+model = "local"
+"#;
+    let cfg = Config::parse(minimal).expect("config minimale valide");
+    assert_eq!(cfg.imap_retry.timeout_secs, 30);
+    assert_eq!(cfg.imap_retry.keepalive_secs, 45);
+    assert_eq!(cfg.imap_retry.max_reconnects, 3);
+}
+
+#[test]
+fn imap_resilience_defaults_quand_seul_retry_est_fourni() {
+    let toml_str = FULL_TOML.replacen(
+        "[imap.retry]",
+        "[imap]\ntimeout_secs = 10\n\n[imap.retry]",
+        1,
+    );
+    let cfg = Config::parse(&toml_str).expect("config valide");
+    assert_eq!(cfg.imap_retry.timeout_secs, 10);
+    // champs non fournis : defaults (keepalive 45s, 3 reconnexions)
+    assert_eq!(cfg.imap_retry.keepalive_secs, 45);
+    assert_eq!(cfg.imap_retry.max_reconnects, 3);
+}
+
+#[test]
+fn imap_resilience_valeurs_explicites_parsees() {
+    let toml_str = FULL_TOML.replacen(
+        "[imap.retry]",
+        "[imap]\ntimeout_secs = 12\nkeepalive_secs = 0\nmax_reconnects = 5\n\n[imap.retry]",
+        1,
+    );
+    let cfg = Config::parse(&toml_str).expect("config valide");
+    assert_eq!(cfg.imap_retry.timeout_secs, 12);
+    assert_eq!(cfg.imap_retry.keepalive_secs, 0, "0 = keepalive desactive");
+    assert_eq!(cfg.imap_retry.max_reconnects, 5);
+    // le retry existant n'est pas ecrase
+    assert_eq!(cfg.imap_retry.retry.max_attempts, 3);
+    assert_eq!(cfg.imap_retry.retry.backoff_base_secs, 2);
+}
