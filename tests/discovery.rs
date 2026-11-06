@@ -854,7 +854,7 @@ async fn spawn_e2e_llm_queue(
 async fn poll_mailbox_avec_discovery_remplit_whitelist_profils_puis_trie() {
     let (imap_port, copies) = spawn_e2e_imap().await;
     let profiling = r#"{"folders":[{"name":"Factures","description":"factures et recus","examples":["Facture octobre"]}]}"#;
-    let batch = r#"{"verdicts":[{"uid":1,"category":"Factures","priority":1,"summary":"Facture EDF octobre","is_newsletter":false,"confidence":0.97}]}"#;
+    let batch = r#"{"verdicts":[{"uid":1,"priority":1,"summary":"Facture EDF octobre","is_newsletter":false,"candidates":[{"category":"Factures","confidence":0.97}]}]}"#;
     let (llm_base, llm_calls) =
         spawn_e2e_llm_queue(vec![profiling.to_string(), batch.to_string()]).await;
 

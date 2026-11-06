@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
 
@@ -6,9 +7,11 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::ports::{ChatMessage, JsonChatRequest, LlmClient, MailClient, ParsedMail};
 use crate::store::{FolderProfile, Store, TriageRecord};
-use crate::triage::{decide, LlmVerdict, TriageAction};
+use crate::triage::{decide, LlmVerdict, RoutingRule, TriageAction, TriageDecision};
 
-/// JSON schema envoye en structured output : un verdict par mail, reassocie par `uid`.
+/// JSON schema envoye en structured output (BATCH_SCHEMA v2, contrat de triage v2) :
+/// un verdict par mail, reassocie par `uid`, portant la liste ordonnee des dossiers
+/// plausibles (`candidates`) au lieu d'une category unique.
 pub const BATCH_SCHEMA: &str = r#"{
   "type": "json_schema",
   "json_schema": {
@@ -23,13 +26,25 @@ pub const BATCH_SCHEMA: &str = r#"{
             "type": "object",
             "properties": {
               "uid": { "type": "integer", "description": "uid du mail dans le batch" },
-              "category": { "type": "string", "description": "dossier de la whitelist, jamais un autre" },
-              "priority": { "type": "integer", "minimum": 1, "maximum": 5 },
               "summary": { "type": "string", "description": "resume en une ligne" },
+              "priority": { "type": "integer", "minimum": 1, "maximum": 5 },
               "is_newsletter": { "type": "boolean" },
-              "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+              "candidates": {
+                "type": "array",
+                "minItems": 1,
+                "description": "dossiers plausibles de la whitelist, ordonnes par confiance decroissante",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "category": { "type": "string", "description": "dossier de la whitelist, jamais un autre" },
+                    "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+                  },
+                  "required": ["category", "confidence"],
+                  "additionalProperties": false
+                }
+              }
             },
-            "required": ["uid", "category", "priority", "summary", "is_newsletter", "confidence"],
+            "required": ["uid", "summary", "priority", "is_newsletter", "candidates"],
             "additionalProperties": false
           }
         }
@@ -181,6 +196,11 @@ pub fn build_user_prompt(
 /// (copy/move, rien en dry-run) -> persistance processed + triage_result.
 /// Le flag SEEN n'est jamais touche. Toute erreur LLM/IMAP remonte sans marquer le batch.
 ///
+/// Contrat de triage v2 : la reponse LLM est validee par rapport au batch (verdict pour un
+/// uid inconnu ecarte, doublon d'uid fusionne ses candidats, uid du batch sans verdict
+/// laisse en place — warn a chaque fois, sans faire echouer le poll), et chaque mail emet
+/// une ligne de log de routage (destination, confiance, nb candidats, regle appliquee).
+///
 /// Non idempotent en cas d'echec partiel : si l'action IMAP reussit puis la persistance
 /// echoue, le mail sera rejoue au poll suivant (doublon possible avec `copy` ; ne pas
 /// activer `move` avant stabilisation de ce point — revue PR #6).
@@ -232,33 +252,73 @@ pub async fn run<M: MailClient, L: LlmClient>(
         };
         let batch: BatchVerdicts = llm.chat_json_schema(req, BATCH_SCHEMA).await?;
 
+        // Validation de la reponse par rapport au batch (contrat v2) : un verdict pour
+        // un uid inconnu du batch est ecarte (warn), deux verdicts pour un meme uid
+        // fusionnent leurs candidats (warn) — aucun des deux ne fait echouer le poll.
+        let batch_uids: HashSet<u64> = mails.iter().map(|(uid, _)| *uid as u64).collect();
         let mut by_uid: HashMap<u64, LlmVerdict> = HashMap::new();
-        for v in &batch.verdicts {
-            if by_uid.insert(v.uid, v.verdict.clone()).is_some() {
-                return Err(Error::Llm(format!(
-                    "uid {} en double dans la reponse LLM",
-                    v.uid
-                )));
+        for v in batch.verdicts {
+            if !batch_uids.contains(&v.uid) {
+                tracing::warn!(
+                    uid = v.uid,
+                    rule = RoutingRule::UidInconnuEcarte.as_str(),
+                    "verdict LLM pour un uid inconnu du batch, ecarte"
+                );
+                continue;
+            }
+            match by_uid.entry(v.uid) {
+                Entry::Occupied(mut e) => {
+                    tracing::warn!(
+                        uid = v.uid,
+                        rule = RoutingRule::DoublonFusionne.as_str(),
+                        "deux verdicts pour le meme uid dans la reponse LLM, candidats fusionnes"
+                    );
+                    e.get_mut().candidates.extend(v.verdict.candidates);
+                }
+                Entry::Vacant(e) => {
+                    e.insert(v.verdict);
+                }
             }
         }
+
         let mut decisions = Vec::with_capacity(mails.len());
         for (uid, parsed) in &mails {
-            let verdict = by_uid.remove(&(*uid as u64)).ok_or_else(|| {
-                Error::Llm(format!("pas de verdict LLM pour le uid {uid} du batch"))
-            })?;
-            let decision = decide(
-                &cfg.whitelist,
-                &verdict,
-                cfg.confidence_threshold,
-                &cfg.action,
-                cfg.dry_run,
-            )?;
+            let decision = match by_uid.remove(&(*uid as u64)) {
+                Some(verdict) => {
+                    let nb_candidats = verdict.candidates.len();
+                    let decision = decide(
+                        &cfg.whitelist,
+                        &verdict,
+                        cfg.confidence_threshold,
+                        &cfg.action,
+                        cfg.dry_run,
+                    )?;
+                    tracing::info!(
+                        uid = *uid,
+                        destination = decision.target_folder.as_deref().unwrap_or("INBOX"),
+                        confidence = decision.confidence,
+                        nb_candidats,
+                        rule = decision.rule.as_str(),
+                        "routage mail"
+                    );
+                    decision
+                }
+                None => {
+                    // uid du batch sans verdict : warn + mail laisse en place (marque
+                    // comme traite en aval, donc pas de resoumission en boucle).
+                    let decision = TriageDecision::left_in_place();
+                    tracing::warn!(
+                        uid = *uid,
+                        destination = "INBOX",
+                        confidence = decision.confidence,
+                        nb_candidats = 0,
+                        rule = decision.rule.as_str(),
+                        "pas de verdict LLM pour ce uid du batch, mail laisse en place"
+                    );
+                    decision
+                }
+            };
             decisions.push((*uid, parsed.clone(), decision));
-        }
-        if let Some(uid) = by_uid.keys().next() {
-            return Err(Error::Llm(format!(
-                "verdict orphelin pour le uid {uid}, absent du batch courant"
-            )));
         }
 
         for (uid, _parsed, decision) in decisions {
