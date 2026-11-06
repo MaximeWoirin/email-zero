@@ -268,3 +268,230 @@ fn ouverture_cree_le_repertoire_parent_du_fichier_sqlite() {
     drop(store);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- description_source : gestion manuelle des descriptions (source llm/user) ----
+
+use email_zero::store::DescriptionSource;
+
+#[test]
+fn migration_ajoute_description_source_a_une_db_legacy() {
+    // DB creee avec l'ancien schema (sans description_source) : l'ouverture ajoute
+    // la colonne avec le defaut 'llm', les donnees existantes restent lisibles et
+    // la reouverture est idempotente.
+    let dir = std::env::temp_dir().join(format!(
+        "ez-legacy-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("legacy.db");
+    let path_str = path.to_str().unwrap().to_string();
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE mailbox (id TEXT PRIMARY KEY);
+             CREATE TABLE folder (
+               mailbox_id TEXT NOT NULL REFERENCES mailbox(id),
+               name TEXT NOT NULL,
+               description TEXT,
+               examples TEXT,
+               \"excluded\" INTEGER NOT NULL DEFAULT 0,
+               updated_at TEXT NOT NULL,
+               PRIMARY KEY (mailbox_id, name)
+             );
+             INSERT INTO mailbox (id) VALUES ('orange');
+             INSERT INTO folder (mailbox_id, name, description, \"excluded\", updated_at)
+               VALUES ('orange', 'Factures', 'factures anciennes', 0, '2026-11-01T00:00:00Z');",
+        )
+        .unwrap();
+    }
+    {
+        let mut store = Store::open(&path_str).unwrap();
+        let p = store.folder_profile("orange", "Factures").unwrap().unwrap();
+        assert_eq!(p.description.as_deref(), Some("factures anciennes"));
+        assert_eq!(
+            p.description_source,
+            DescriptionSource::Llm,
+            "defaut 'llm' sur l'ancienne donnee"
+        );
+        // la colonne existe bien pour les ecritures suivantes
+        store
+            .set_user_folder_description("orange", "Factures", "desc manuelle")
+            .unwrap();
+        let p = store.folder_profile("orange", "Factures").unwrap().unwrap();
+        assert_eq!(p.description_source, DescriptionSource::User);
+        drop(store);
+        // reouverture : la migration ne se rejoue pas sans erreur
+        let store = Store::open(&path_str).unwrap();
+        let p = store.folder_profile("orange", "Factures").unwrap().unwrap();
+        assert_eq!(p.description_source, DescriptionSource::User);
+        assert_eq!(p.description.as_deref(), Some("desc manuelle"));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn description_utilisateur_persiste_avec_la_source_user() {
+    let mut store = open_store();
+    store.sync_mailboxes(&["orange".to_string()]).unwrap();
+    store
+        .upsert_folders("orange", &[("Factures", None, false)])
+        .unwrap();
+    store
+        .set_user_folder_description("orange", "Factures", "factures, recus, relances")
+        .unwrap();
+    let p = store.folder_profile("orange", "Factures").unwrap().unwrap();
+    assert_eq!(p.description.as_deref(), Some("factures, recus, relances"));
+    assert_eq!(p.description_source, DescriptionSource::User);
+    assert!(!p.updated_at.is_empty(), "updated_at mis a jour");
+}
+
+#[test]
+fn le_profilage_llm_n_ecrase_jamais_une_description_utilisateur() {
+    // précédence : set_folder_profile (chemin LLM du discovery) laisse intacte une
+    // ligne en source 'user' (description, exemples, source, updated_at).
+    let mut store = open_store();
+    store.sync_mailboxes(&["orange".to_string()]).unwrap();
+    store
+        .upsert_folders("orange", &[("Factures", None, false)])
+        .unwrap();
+    store
+        .set_user_folder_description("orange", "Factures", "desc manuelle")
+        .unwrap();
+    let avant = store.folder_profile("orange", "Factures").unwrap().unwrap();
+    store
+        .set_folder_profile(
+            "orange",
+            "Factures",
+            Some("desc llm"),
+            &["ex llm".to_string()],
+        )
+        .unwrap();
+    let apres = store.folder_profile("orange", "Factures").unwrap().unwrap();
+    assert_eq!(apres.description, avant.description);
+    assert_eq!(apres.examples, avant.examples);
+    assert_eq!(apres.description_source, DescriptionSource::User);
+    assert_eq!(
+        apres.updated_at, avant.updated_at,
+        "ligne non touchee du tout"
+    );
+}
+
+#[test]
+fn le_profilage_llm_ecrit_avec_la_source_llm_sur_un_dossier_llm() {
+    let mut store = open_store();
+    store.sync_mailboxes(&["orange".to_string()]).unwrap();
+    store
+        .upsert_folders("orange", &[("Factures", None, false)])
+        .unwrap();
+    store
+        .set_folder_profile("orange", "Factures", Some("factures llm"), &[])
+        .unwrap();
+    let p = store.folder_profile("orange", "Factures").unwrap().unwrap();
+    assert_eq!(p.description.as_deref(), Some("factures llm"));
+    assert_eq!(p.description_source, DescriptionSource::Llm);
+}
+
+#[test]
+fn reset_remet_la_source_llm_et_le_profilage_suivant_reecrit() {
+    let mut store = open_store();
+    store.sync_mailboxes(&["orange".to_string()]).unwrap();
+    store
+        .upsert_folders("orange", &[("Factures", None, false)])
+        .unwrap();
+    store
+        .set_user_folder_description("orange", "Factures", "desc manuelle")
+        .unwrap();
+    store
+        .reset_folder_description_source("orange", "Factures")
+        .unwrap();
+    let p = store.folder_profile("orange", "Factures").unwrap().unwrap();
+    assert_eq!(p.description_source, DescriptionSource::Llm);
+    assert_eq!(
+        p.description.as_deref(),
+        Some("desc manuelle"),
+        "la description courante reste en place jusqu'au prochain profilage"
+    );
+    // et le profilage LLM peut a nouveau ecrire
+    store
+        .set_folder_profile("orange", "Factures", Some("desc llm 2"), &[])
+        .unwrap();
+    let p = store.folder_profile("orange", "Factures").unwrap().unwrap();
+    assert_eq!(p.description.as_deref(), Some("desc llm 2"));
+    assert_eq!(p.description_source, DescriptionSource::Llm);
+}
+
+#[test]
+fn set_user_et_reset_sur_dossier_inconnu_sont_rejetes() {
+    let mut store = open_store();
+    store.sync_mailboxes(&["orange".to_string()]).unwrap();
+    let err = store
+        .set_user_folder_description("orange", "Inconnu", "x")
+        .unwrap_err();
+    assert!(err.to_string().contains("Inconnu"), "{err}");
+    let err = store
+        .reset_folder_description_source("orange", "Inconnu")
+        .unwrap_err();
+    assert!(err.to_string().contains("Inconnu"), "{err}");
+}
+
+#[test]
+fn folders_liste_les_dossiers_avec_source_exclusion_et_exemples() {
+    let mut store = open_store();
+    store.sync_mailboxes(&["orange".to_string()]).unwrap();
+    store
+        .upsert_folders(
+            "orange",
+            &[
+                ("Factures", None, false),
+                ("Perso", None, false),
+                ("Trash", None, true),
+            ],
+        )
+        .unwrap();
+    store
+        .set_folder_profile(
+            "orange",
+            "Factures",
+            Some("factures llm"),
+            &["Facture octobre".to_string()],
+        )
+        .unwrap();
+    store
+        .set_user_folder_description("orange", "Perso", "mails perso manuels")
+        .unwrap();
+    let all = store.folders("orange").unwrap();
+    let noms: Vec<&str> = all.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(noms, vec!["Factures", "Perso", "Trash"], "ordre alpha");
+    assert_eq!(all[0].description_source, DescriptionSource::Llm);
+    assert!(!all[0].excluded);
+    assert_eq!(all[0].examples, vec!["Facture octobre".to_string()]);
+    assert_eq!(all[1].description_source, DescriptionSource::User);
+    assert_eq!(all[1].description.as_deref(), Some("mails perso manuels"));
+    assert!(all[2].excluded, "dossier exclu remonte aussi");
+}
+
+#[test]
+fn user_described_folders_ne_retourne_que_les_sources_user() {
+    let mut store = open_store();
+    store.sync_mailboxes(&["orange".to_string()]).unwrap();
+    store
+        .upsert_folders(
+            "orange",
+            &[("Factures", None, false), ("Perso", None, false)],
+        )
+        .unwrap();
+    assert!(store.user_described_folders("orange").unwrap().is_empty());
+    store
+        .set_folder_profile("orange", "Factures", Some("factures llm"), &[])
+        .unwrap();
+    store
+        .set_user_folder_description("orange", "Perso", "perso manuel")
+        .unwrap();
+    assert_eq!(
+        store.user_described_folders("orange").unwrap(),
+        vec!["Perso".to_string()]
+    );
+}

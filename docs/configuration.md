@@ -87,6 +87,20 @@ la boîte.
 |-----|------|--------|------|
 | `path` | string | `"data/email-zero.sqlite"` | Fichier SQLite (créé avec son répertoire parent si absent). |
 
+### Descriptions de dossiers dans le state store
+
+La table `folder` porte une colonne `description_source` (`llm` | `user`) :
+`llm` = description produite par le profilage automatique de la découverte,
+`user` = description saisie manuellement. Une description `user` n'est **jamais
+réécrite** par la découverte (`--refresh-folders` ou intervalle compris) : elle
+alimente telle quelle le prompt de triage au run suivant. Les commandes
+`--list-folders`, `--describe-folder` et `--reset-folder-description` (voir la
+section « Référence CLI » du [README](../README.md)) agissent sur ce state store
+seul, sans connexion IMAP ni LLM ; `--reset-folder-description` repasse la source
+à `llm` pour rendre la main au profilage. Sur une base existante créée avant
+l'introduction de la colonne, celle-ci est ajoutée à l'ouverture avec le défaut
+`llm` (les descriptions existantes étaient produites par le LLM).
+
 ## `[log]` — logging
 
 | Clé | Type | Défaut | Rôle |

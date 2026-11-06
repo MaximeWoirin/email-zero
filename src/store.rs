@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS folder (
   mailbox_id TEXT NOT NULL REFERENCES mailbox(id),
   name TEXT NOT NULL,
   description TEXT,
+  description_source TEXT NOT NULL DEFAULT 'llm',
   examples TEXT,
   "excluded" INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
@@ -82,11 +83,49 @@ impl TriageRecord {
     }
 }
 
+/// Source de la description d'un dossier : `llm` (profilage automatique par la
+/// decouverte) ou `user` (saisie manuelle via `--describe-folder`, que la
+/// decouverte ne doit jamais ecraser).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DescriptionSource {
+    Llm,
+    User,
+}
+
+impl DescriptionSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DescriptionSource::Llm => "llm",
+            DescriptionSource::User => "user",
+        }
+    }
+
+    /// Toute valeur inconnue retombe sur `llm` (defaut historique).
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "user" => DescriptionSource::User,
+            _ => DescriptionSource::Llm,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FolderProfile {
     pub name: String,
     pub description: Option<String>,
+    pub description_source: DescriptionSource,
     pub examples: Vec<String>,
+    pub updated_at: String,
+}
+
+/// Etat complet d'un dossier pour l'affichage (`--list-folders`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FolderInfo {
+    pub name: String,
+    pub description: Option<String>,
+    pub description_source: DescriptionSource,
+    pub examples: Vec<String>,
+    pub excluded: bool,
     pub updated_at: String,
 }
 
@@ -96,6 +135,13 @@ pub struct DiscoveryRun {
     pub finished_at: Option<String>,
     pub status: String,
     pub folders_profiled: Option<i64>,
+}
+
+fn unknown_folder_error(mailbox: &str, folder: &str) -> Error {
+    Error::Store(format!(
+        "dossier '{folder}' inconnu du state store pour la mailbox '{mailbox}' \
+         (lancez d'abord une decouverte des dossiers, ou corrigez le nom : --list-folders)"
+    ))
 }
 
 /// Secondes since epoch (UTC) maintenant.
@@ -194,6 +240,20 @@ impl Store {
         // CREATE TABLE IF NOT EXISTS : idempotent, la reouverture d'une DB existante
         // repasse sans erreur (couvert par reouverture_d_une_db_fichier_est_idempotente).
         conn.execute_batch(SCHEMA)?;
+        // Migration : la colonne description_source peut manquer sur une DB creee
+        // avant son introduction -> ALTER TABLE avec le defaut 'llm' (les
+        // descriptions existantes etaient produites par le LLM).
+        let has_source: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('folder') WHERE name='description_source'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_source == 0 {
+            conn.execute(
+                "ALTER TABLE folder ADD COLUMN description_source TEXT NOT NULL DEFAULT 'llm'",
+                [],
+            )?;
+        }
         Ok(Self { conn })
     }
 
@@ -302,6 +362,8 @@ impl Store {
 
     /// `description = None` = fallback decouverte (LLM indisponible) :
     /// echantillons bruts gardes sans description semantique.
+    /// Precedence : une ligne en source `user` (description saisie manuellement)
+    /// n'est JAMAIS ecrassee ici — le WHERE l'exclut, la ligne reste intacte.
     pub fn set_folder_profile(
         &mut self,
         mailbox: &str,
@@ -311,8 +373,8 @@ impl Store {
     ) -> Result<()> {
         let examples_json = serde_json::to_string(examples)?;
         self.conn.execute(
-            "UPDATE folder SET description=?1, examples=?2, updated_at=?3
-             WHERE mailbox_id=?4 AND name=?5",
+            "UPDATE folder SET description=?1, examples=?2, description_source='llm', updated_at=?3
+             WHERE mailbox_id=?4 AND name=?5 AND description_source<>'user'",
             params![
                 description,
                 examples_json,
@@ -324,22 +386,91 @@ impl Store {
         Ok(())
     }
 
+    /// Ecrit une description saisie manuellement (source `user`) : la decouverte
+    /// ne l'ecrasera plus. Rejette un dossier absent du state store (evite de
+    /// creer une entree fantome dans la whitelist via une faute de frappe).
+    pub fn set_user_folder_description(
+        &mut self,
+        mailbox: &str,
+        folder: &str,
+        description: &str,
+    ) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE folder SET description=?1, description_source='user', updated_at=?2
+             WHERE mailbox_id=?3 AND name=?4",
+            params![description, now_iso8601_utc(), mailbox, folder],
+        )?;
+        if changed == 0 {
+            return Err(unknown_folder_error(mailbox, folder));
+        }
+        Ok(())
+    }
+
+    /// Rend la main au profilage LLM : la source repasse a `llm`, la description
+    /// courante reste en place jusqu'au prochain run de decouverte.
+    pub fn reset_folder_description_source(&mut self, mailbox: &str, folder: &str) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE folder SET description_source='llm', updated_at=?1
+             WHERE mailbox_id=?2 AND name=?3",
+            params![now_iso8601_utc(), mailbox, folder],
+        )?;
+        if changed == 0 {
+            return Err(unknown_folder_error(mailbox, folder));
+        }
+        Ok(())
+    }
+
+    /// Tous les dossiers d'une boite (y compris exclus), ordre alpha — pour
+    /// l'affichage `--list-folders`.
+    pub fn folders(&self, mailbox: &str) -> Result<Vec<FolderInfo>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name, description, description_source, examples, \"excluded\", updated_at
+             FROM folder WHERE mailbox_id=?1 ORDER BY name",
+        )?;
+        let rows = stmt.query_map(params![mailbox], |row| {
+            let examples_json: Option<String> = row.get(3)?;
+            let examples = examples_json
+                .map(|j| serde_json::from_str::<Vec<String>>(&j).unwrap_or_default())
+                .unwrap_or_default();
+            Ok(FolderInfo {
+                name: row.get(0)?,
+                description: row.get(1)?,
+                description_source: DescriptionSource::parse(&row.get::<_, String>(2)?),
+                examples,
+                excluded: row.get::<_, i64>(4)? != 0,
+                updated_at: row.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Dossiers dont la description est saisie manuellement (source `user`) :
+    /// la decouverte les epargne lors du profilage.
+    pub fn user_described_folders(&self, mailbox: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name FROM folder WHERE mailbox_id=?1 AND description_source='user' ORDER BY name",
+        )?;
+        let rows = stmt.query_map(params![mailbox], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     pub fn folder_profile(&self, mailbox: &str, folder: &str) -> Result<Option<FolderProfile>> {
         self.conn
             .query_row(
-                "SELECT name, description, examples, updated_at FROM folder
+                "SELECT name, description, description_source, examples, updated_at FROM folder
                  WHERE mailbox_id=?1 AND name=?2",
                 params![mailbox, folder],
                 |row| {
-                    let examples_json: Option<String> = row.get(2)?;
+                    let examples_json: Option<String> = row.get(3)?;
                     let examples = examples_json
                         .map(|j| serde_json::from_str::<Vec<String>>(&j).unwrap_or_default())
                         .unwrap_or_default();
                     Ok(FolderProfile {
                         name: row.get(0)?,
                         description: row.get(1)?,
+                        description_source: DescriptionSource::parse(&row.get::<_, String>(2)?),
                         examples,
-                        updated_at: row.get(3)?,
+                        updated_at: row.get(4)?,
                     })
                 },
             )

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use email_zero::error::{Error, Result};
 use email_zero::pipeline::{run, PipelineConfig, RunStats, BATCH_SCHEMA};
 use email_zero::ports::{Folder, JsonChatRequest, LlmClient, MailClient, MailHeader, ParsedMail};
-use email_zero::store::{FolderProfile, Store};
+use email_zero::store::{DescriptionSource, FolderProfile, Store};
 use serde::de::DeserializeOwned;
 
 /// Capture les logs tracing emis pendant un test (thread-local via set_default).
@@ -227,12 +227,14 @@ fn setup() -> (Store, PipelineConfig) {
             FolderProfile {
                 name: "Factures".into(),
                 description: Some("factures et justificatifs".into()),
+                description_source: DescriptionSource::Llm,
                 examples: vec!["Facture EDF octobre".into()],
                 updated_at: "2026-11-01T00:00:00Z".into(),
             },
             FolderProfile {
                 name: "Newsletters".into(),
                 description: None,
+                description_source: DescriptionSource::Llm,
                 examples: vec![],
                 updated_at: "2026-11-01T00:00:00Z".into(),
             },
@@ -875,4 +877,78 @@ async fn keepalive_desactive_aucun_noop_pendant_l_appel_llm() {
         .unwrap();
 
     assert_eq!(mail.noops.get(), 0);
+}
+
+#[test]
+fn description_saisie_manuellement_apparait_dans_le_prompt_de_triage_au_run_suivant() {
+    // critere d'acceptation : une description en source 'user' ecrite dans le
+    // state store est relue par pipeline_config_for et injectee telle quelle
+    // dans le prompt de triage (build_user_prompt).
+    let dir = std::env::temp_dir().join(format!(
+        "ez-test-prompt-user-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let prompt_path = dir.join("prompt.md");
+    std::fs::write(&prompt_path, "PROMPT DE TEST").unwrap();
+
+    let toml_str = format!(
+        r#"
+[[mailbox]]
+id = "orange"
+host = "127.0.0.1"
+port = 1143
+username = "a@b.c"
+password_env = "EZ_PW"
+
+[llm]
+base_url = "http://localhost:4000/v1"
+api_key_env = "EZ_LLM_API_KEY"
+model = "local"
+
+[triage]
+prompt_path = {:?}
+"#,
+        prompt_path.to_str().unwrap()
+    );
+    let cfg = email_zero::config::Config::parse(&toml_str).unwrap();
+    let mut store = Store::open_in_memory().unwrap();
+    store.sync_mailboxes(&["orange".to_string()]).unwrap();
+    store
+        .upsert_folders("orange", &[("Factures", None, false)])
+        .unwrap();
+    store
+        .set_folder_profile("orange", "Factures", Some("profil llm initial"), &[])
+        .unwrap();
+    // l'utilisateur prend la main sur la description
+    store
+        .set_user_folder_description(
+            "orange",
+            "Factures",
+            "factures et recus UNIQUEMENT, jamais de marketing evenementiel",
+        )
+        .unwrap();
+
+    let pc = email_zero::pipeline::pipeline_config_for(&cfg, &store, "orange", true).unwrap();
+    let prompt = email_zero::pipeline::build_user_prompt(
+        &pc.profiles,
+        &pc.whitelist,
+        &[],
+        pc.max_body_chars,
+        pc.examples_in_prompt,
+    );
+    assert!(
+        prompt
+            .contains("Factures — factures et recus UNIQUEMENT, jamais de marketing evenementiel"),
+        "la description manuelle doit alimenter le prompt de triage: {prompt}"
+    );
+    assert!(
+        !prompt.contains("profil llm initial"),
+        "l'ancien profil llm est remplace: {prompt}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

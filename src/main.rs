@@ -4,6 +4,7 @@ use clap::Parser;
 use email_zero::clients::llm::OpenAiLlmClient;
 use email_zero::config::Config;
 use email_zero::error::Result;
+use email_zero::folders::FolderCli;
 use email_zero::runner::{daemon_loop, real_connect};
 use email_zero::store::Store;
 use tracing_subscriber::EnvFilter;
@@ -30,6 +31,35 @@ struct Cli {
     /// Force le rafraîchissement des profils de dossiers
     #[arg(long)]
     refresh_folders: bool,
+
+    /// Affiche l'état des dossiers du state store (source llm/user, whitelist,
+    /// description, exemples) puis quitte, sans connexion IMAP ni LLM
+    #[arg(long, conflicts_with_all = ["describe_folder", "reset_folder_description"])]
+    list_folders: bool,
+
+    /// Définit manuellement la description d'un dossier (texte libre, source
+    /// 'user', jamais écrasée par la découverte) puis quitte
+    #[arg(
+        long,
+        value_name = "DOSSIER",
+        conflicts_with = "reset_folder_description"
+    )]
+    describe_folder: Option<String>,
+
+    /// Texte de la nouvelle description pour --describe-folder (sinon lu sur
+    /// stdin, multiligne jusqu'à EOF)
+    #[arg(long, value_name = "TEXTE", requires = "describe_folder")]
+    describe_text: Option<String>,
+
+    /// Rend la main au profilage LLM pour la description d'un dossier (retour
+    /// à la source 'llm') puis quitte
+    #[arg(long, value_name = "DOSSIER")]
+    reset_folder_description: Option<String>,
+
+    /// Boîte cible des commandes de gestion des dossiers (sinon : toutes les
+    /// boîtes configurées)
+    #[arg(long, value_name = "ID")]
+    mailbox: Option<String>,
 }
 
 fn init_logging(level: &str) {
@@ -58,6 +88,28 @@ async fn main() -> Result<()> {
     let mut store = Store::open(&cfg.store.path)?;
     let ids: Vec<String> = cfg.mailboxes.iter().map(|m| m.id.clone()).collect();
     store.sync_mailboxes(&ids)?;
+
+    // Commandes de gestion des dossiers : elles agissent sur le state store
+    // seul (pas de client LLM, pas de connexion IMAP) puis quittent.
+    let folder_cli = FolderCli {
+        list_folders: cli.list_folders,
+        describe_folder: cli.describe_folder.clone(),
+        describe_text: cli.describe_text.clone(),
+        reset_folder_description: cli.reset_folder_description.clone(),
+        mailbox: cli.mailbox.clone(),
+    };
+    if let Some(cmd) = folder_cli.command()? {
+        let mut stdin = std::io::stdin();
+        let mut stdout = std::io::stdout();
+        return email_zero::folders::run_folder_command(
+            &cfg,
+            &mut store,
+            &cmd,
+            folder_cli.mailbox.as_deref(),
+            &mut stdin,
+            &mut stdout,
+        );
+    }
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
