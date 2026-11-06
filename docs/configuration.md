@@ -3,7 +3,7 @@
 Référence complète du fichier de config TOML. [`config.example.toml`](../config.example.toml)
 à la racine du dépôt est l'exemple exécutable — il est validé par un test dédié
 (`tests/example_config.rs`), donc toujours à jour. Copiez-le en `config.toml`
-(ignoré par Git) et remplir les **noms** de variables d'env : aucun secret dans le
+(ignoré par Git) et remplissez les **noms** de variables d'env : aucun secret dans le
 fichier de config, uniquement des références résolues au démarrage
 (voir [Gestion des secrets](#gestion-des-secrets)).
 
@@ -12,12 +12,12 @@ fichier de config, uniquement des références résolues au démarrage
 | Clé | Type | Défaut | Rôle |
 |-----|------|--------|------|
 | `id` | string | requis | Identifiant interne de la boîte ; doit être **unique** parmi toutes les boîtes. |
-| `host` | string | requis | Serveur IMAP (ex. `imap.orange.fr`, ou `bridge` via Proton Bridge en compose). |
+| `host` | string | requis | Serveur IMAP (ex. `imap.example.com`, ou `bridge` si les boîtes passent par Proton Bridge en compose). |
 | `port` | entier | requis | Port IMAP (993 en TLS, 1143 via Bridge en clair local). |
 | `username` | string | requis | Identifiant de connexion. |
 | `password_env` | string | — | Nom de la variable d'environnement contenant le mot de passe. |
-| `password_cmd` | string | — | Commande exécutée via `sh -c` au démarrage ; la sortie stdout (trimmée) est le mot de passe (`pass email/orange`, `op read …`). |
-| `password` | string | — | Mot de passe en clair — toléré pour le POC, **warning au démarrage**. |
+| `password_cmd` | string | — | Commande exécutée via `sh -c` au démarrage ; la sortie stdout (trimmée) est le mot de passe (`pass email/<boîte>`, `op read …`). |
+| `password` | string | — | Mot de passe en clair — toléré (déconseillé), **warning au démarrage**. |
 | `tls` | bool | `false` | Chiffrement TLS de la connexion IMAP (rustls). |
 | `poll_interval_secs` | entier | `300` | Intervalle entre deux polls en mode daemon. |
 
@@ -31,7 +31,7 @@ la boîte.
 |-----|------|--------|------|
 | `base_url` | string | requis | Racine de l'API, ex. `https://litellm.example.com/v1` ; les requêtes partent en `POST {base_url}/chat/completions`. Voir [Règles de validation](#règles-de-validation). |
 | `api_key_env` | string | requis | Nom de la variable d'environnement contenant la clé API (transmise en bearer). |
-| `model` | string | requis | Modèle appelé (ex. `gpt-4o-mini`). |
+| `model` | string | requis | Modèle appelé. |
 | `temperature` | réel | `0.2` | Température d'échantillonnage. |
 | `top_p` | réel | `1.0` | Nucleus sampling. |
 | `max_tokens` | entier | `4096` | Tokens max de la réponse. |
@@ -89,7 +89,7 @@ la boîte.
 
 Logs en **JSON structurés** sur stdout. `[log] level = "debug"` loggue en plus
 chaque requête LLM envoyée (modèle, URL, payload) et chaque réponse reçue
-(status, payload) — utile pour déboguer le prompt et le contrat de triage (PR #19).
+(status, payload) — utile pour déboguer le prompt et le contrat de triage.
 
 ## Gestion des secrets
 
@@ -97,10 +97,10 @@ Les secrets ne sont **jamais dans le fichier de config** — seulement des réf�
 résolues au démarrage de chaque boîte (une env absente ou une commande en échec =
 refus de démarrer la boîte) :
 
-- **`password_env`** : nom de la variable d'environnement (`EZ_ORANGE_PASSWORD`) ;
+- **`password_env`** : nom de la variable d'environnement (ex. `EZ_MAILBOX_PASSWORD`) ;
   le secret vit dans l'environnement du processus.
-- **`password_cmd`** : commande exécutée (`pass email/orange`, keyring, `op read …`).
-- **`password = "..."` en clair** : toléré pour le POC mais **gros warning au
+- **`password_cmd`** : commande exécutée (`pass email/<boîte>`, keyring, `op read …`).
+- **`password = "..."` en clair** : toléré mais **gros warning au
   démarrage** — pour ne pas en prendre l'habitude.
 
 Le `Debug` de la config masque tous les champs secrets (`***`) : le log de la config
@@ -125,16 +125,18 @@ sur l'hôte Docker, ex. Ollama/LiteLLM local en compose via `extra_hosts`).
 
 ## Déploiement
 
-### Docker Compose (POC, cible Pi 3 B+ arm64)
+### Docker Compose
 
 ```sh
-cp config.example.toml config.toml     # boîte "proton" : host = "bridge", port = 1143, tls = false
-cp .env.example .env && chmod 600 .env # secrets injectés via env_file ; .env JAMAIS commité
-install -d -o 10001 -g 10001 data       # propriétaire = user non-root du conteneur
-docker compose run --rm bridge init    # ajouter le compte Proton dans Bridge (interactif)
-docker compose run --rm email-zero --config /config/config.toml --dry-run --once  # smoke
-docker compose up -d                   # daemon
+cp config.example.toml config.toml       # adapter les boîtes à votre serveur IMAP
+cp .env.example .env && chmod 600 .env  # secrets injectés via env_file ; .env JAMAIS commité
+install -d -o 10001 -g 10001 data        # propriétaire = user non-root du conteneur
+docker compose run --rm email-zero --config /config/config.toml --dry-run --once  # vérification sans écriture
+docker compose up -d                     # daemon
 ```
+
+Une boîte passant par Proton Bridge s'initialise une fois avec
+`docker compose run --rm bridge init` (interactif).
 
 Dans `docker-compose.yml` : `config.toml` est monté en **lecture seule**
 (`./config.toml:/config/config.toml:ro`), le state store vit dans `./data`, les
@@ -143,7 +145,7 @@ sur le loopback, et `extra_hosts: host.docker.internal:host-gateway` permet à l
 boîte d'atteindre un proxy LLM sur l'hôte. `config.toml` et `.env` sont dans
 `.gitignore`.
 
-### Kubernetes (plus tard)
+### Kubernetes
 
 Même image, même config : seules les sources des secrets changent — des Secrets
 K8s montés en variables d'environnement (`password_env` pointe toujours sur le nom
