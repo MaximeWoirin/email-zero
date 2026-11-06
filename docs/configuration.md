@@ -85,7 +85,7 @@ la boîte.
 
 | Clé | Type | Défaut | Rôle |
 |-----|------|--------|------|
-| `level` | string | `"info"` | Niveau minimal : `trace`, `debug`, `info`, `warn`, `error`. La variable d'environnement `RUST_LOG` prend le pas si elle est définie. |
+| `level` | string | `"info"` | Niveau minimal : `trace`, `debug`, `info`, `warn`, `error`. **Priorité `RUST_LOG`** : si la variable d'environnement `RUST_LOG` est définie, elle prend le pas sur cette valeur. |
 
 Logs en **JSON structurés** sur stdout. `[log] level = "debug"` loggue en plus
 chaque requête LLM envoyée (modèle, URL, payload) et chaque réponse reçue

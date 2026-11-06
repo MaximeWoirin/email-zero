@@ -19,15 +19,15 @@ struct Cli {
     #[arg(long, default_value = "config.toml")]
     config: String,
 
-    /// Evalue et affiche les actions prevues sans rien ecrire sur le serveur
+    /// Évalue et affiche les actions prévues sans rien écrire sur le serveur
     #[arg(long)]
     dry_run: bool,
 
-    /// Une seule execution puis sortie (manuel, cron, timer systemd)
+    /// Une seule exécution puis sortie (manuel, cron, timer systemd)
     #[arg(long)]
     once: bool,
 
-    /// Force le rafraichissement des profils de dossiers
+    /// Force le rafraîchissement des profils de dossiers
     #[arg(long)]
     refresh_folders: bool,
 }

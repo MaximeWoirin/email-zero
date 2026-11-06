@@ -67,6 +67,32 @@ cargo run -- --config config.toml --dry-run --once
 Voir [docs/configuration.md](docs/configuration.md) pour la référence complète du
 fichier TOML et la gestion des secrets.
 
+## Référence CLI
+
+`--help` (généré par clap) reste la source des options ; cette section documente la
+sémantique, pas un copié-collé.
+
+| Option | Défaut | Sémantique |
+|--------|--------|------------|
+| `--config <chemin>` | `config.toml` | Chemin du fichier de config TOML. |
+| `--dry-run` | off | Évalue et affiche les actions prévues sans rien écrire sur le serveur. |
+| `--once` | off | Une seule exécution puis sortie (manuel, cron, timer systemd). |
+| `--refresh-folders` | off | Force le rafraîchissement des profils de dossiers. |
+| `--version`, `--help` | — | Générés par clap. |
+
+**Combinaisons** :
+
+- `--dry-run --once` = **smoke de référence** : un seul poll, aucune écriture —
+  c'est la commande du smoke avant le premier run réel.
+- **Daemon** (sans `--once`) : sommeil entre deux tours = min des
+  `poll_interval_secs` des boîtes ; chaque boîte est **reconnectée à chaque
+  itération** (une session inactive est déconnectée par le serveur entre deux polls) ;
+  l'échec d'une boîte est logué et **isolé**, il n'arrête pas le daemon.
+
+**Variables d'environnement** : `RUST_LOG` a la **priorité** sur `[log].level` quand
+elle est définie ; les secrets (`EZ_*`) sont résolus via `password_env` /
+`password_cmd` (voir [docs/configuration.md](docs/configuration.md)).
+
 ## Déployer (POC conteneur, cible Pi 3 B+ arm64)
 
 ```sh
