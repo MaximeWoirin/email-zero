@@ -49,10 +49,13 @@ fn is_source_folder(name: &str) -> bool {
     name.eq_ignore_ascii_case("INBOX")
 }
 
-/// Exclusion d'un dossier : son nom OU son special-use (RFC 6154) figure dans
-/// `exclude_folders` (comparaison sans le backslash, insensible a la casse),
-/// ou dossier source INBOX. `\Noselect` est deja filtre par le client IMAP.
-fn is_excluded(folder: &Folder, exclude_folders: &[String]) -> bool {
+/// Exclusion d'un dossier : un composant de son chemin (separateur `/`) OU son
+/// special-use (RFC 6154) correspond, sans le backslash initial et insensible a
+/// la casse, a une entree de `exclude_folders` — un dossier exclu exclut tout
+/// son sous-arbre (matching par prefixe : `Trash` exclut `INBOX/Trash` comme
+/// `INBOX/TRASH/Documents`, issue #28). Le dossier source INBOX est toujours
+/// exclu. `\Noselect` est deja filtre par le client IMAP.
+pub fn is_excluded(folder: &Folder, exclude_folders: &[String]) -> bool {
     if is_source_folder(&folder.name) {
         return true;
     }
@@ -62,7 +65,12 @@ fn is_excluded(folder: &Folder, exclude_folders: &[String]) -> bool {
             .iter()
             .any(|e| e.trim_start_matches('\\').eq_ignore_ascii_case(v))
     };
-    if matches(&folder.name) {
+    if folder
+        .name
+        .split('/')
+        .filter(|c| !c.is_empty())
+        .any(matches)
+    {
         return true;
     }
     folder.special_use.as_deref().map(matches).unwrap_or(false)

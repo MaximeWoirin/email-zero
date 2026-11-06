@@ -58,12 +58,14 @@ fn config_litellm_couvre_les_scenarios_e2e() {
     for attendu in [
         "model_name: mock-ok",
         "model_name: mock-missing-verdict",
+        "model_name: mock-hors-whitelist",
         "model_name: mock-429",
         "model_name: mock-500",
         "mock_response: \"litellm.RateLimitError\"",
         "mock_response: \"litellm.InternalServerError\"",
         "master_key: os.environ/LITELLM_MASTER_KEY",
-        "candidates", // contrat de triage v2 (issue #21)
+        "candidates",  // contrat de triage v2 (issue #21)
+        "INBOX/TRASH", // categorie hors whitelist du scenario mock-hors-whitelist (issue #28)
     ] {
         assert!(
             cfg.contains(attendu),
@@ -376,6 +378,56 @@ async fn pipeline_e2e_mock_ok_copie_les_deux_mails_via_le_proxy_reel() {
         .unwrap();
     assert_eq!(r.target_folder.as_deref(), Some("Factures"));
     assert_eq!(r.action, "copy");
+}
+
+#[tokio::test]
+#[ignore = "job CI llm-litellm uniquement : necessite le sidecar LiteLLM reel (EZ_TEST_LITELLM_*)"]
+async fn pipeline_e2e_mock_hors_whitelist_categorie_ecartee_sans_echec_de_poll() {
+    // Smoke du 2026-11-06 soir (issue #28) vu de bout en bout a travers le proxy
+    // reel : uid 101 propose "INBOX/TRASH" (hors whitelist) -> ecarte par le
+    // garde-fou, mail laisse en place et marque traite ; uid 102 a un candidat
+    // whitelist valide -> copie. Aucun placement invalide, aucun echec de poll.
+    let mut mail = FakeMail::with_mails();
+    let mut store = Store::open_in_memory().unwrap();
+    store.sync_mailboxes(&["test".to_string()]).unwrap();
+    let cfg = llm_cfg("mock-hors-whitelist", 3);
+    let llm = client(&cfg, &cle_valide());
+
+    let stats = run(
+        &mut mail,
+        &llm,
+        &mut store,
+        "test",
+        "INBOX",
+        &pipeline_cfg("mock-hors-whitelist"),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(stats.scanned, 2);
+    assert_eq!(stats.pending, 2);
+    assert_eq!(stats.decided, 2);
+    assert_eq!(stats.copied, 1);
+    assert_eq!(stats.left_in_inbox, 1);
+    assert_eq!(
+        *mail.copies.borrow(),
+        vec![(102, "Factures".to_string())],
+        "aucun placement vers INBOX/TRASH"
+    );
+    assert!(store.is_processed("test", "INBOX", 42, 101).unwrap());
+    assert!(store.is_processed("test", "INBOX", 42, 102).unwrap());
+    let r101 = store
+        .triage_result("test", "INBOX", 42, 101)
+        .unwrap()
+        .unwrap();
+    assert_eq!(r101.target_folder, None);
+    assert_eq!(r101.action, "none");
+    let r102 = store
+        .triage_result("test", "INBOX", 42, 102)
+        .unwrap()
+        .unwrap();
+    assert_eq!(r102.target_folder.as_deref(), Some("Factures"));
+    assert_eq!(r102.action, "copy");
 }
 
 #[tokio::test]
