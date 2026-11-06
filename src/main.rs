@@ -51,6 +51,11 @@ struct Cli {
     #[arg(long, value_name = "TEXTE", requires = "describe_folder")]
     describe_text: Option<String>,
 
+    /// Exemples de sujets fournis avec --describe-folder, séparés par ';' ;
+    /// sans cette option, les exemples du profilage LLM sont purgés
+    #[arg(long, value_name = "EX1;EX2;...", requires = "describe_folder")]
+    describe_examples: Option<String>,
+
     /// Rend la main au profilage LLM pour la description d'un dossier (retour
     /// à la source 'llm') puis quitte
     #[arg(long, value_name = "DOSSIER")]
@@ -95,6 +100,7 @@ async fn main() -> Result<()> {
         list_folders: cli.list_folders,
         describe_folder: cli.describe_folder.clone(),
         describe_text: cli.describe_text.clone(),
+        describe_examples: cli.describe_examples.clone(),
         reset_folder_description: cli.reset_folder_description.clone(),
         mailbox: cli.mailbox.clone(),
     };

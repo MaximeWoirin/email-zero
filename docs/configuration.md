@@ -93,11 +93,14 @@ La table `folder` porte une colonne `description_source` (`llm` | `user`) :
 `llm` = description produite par le profilage automatique de la découverte,
 `user` = description saisie manuellement. Une description `user` n'est **jamais
 réécrite** par la découverte (`--refresh-folders` ou intervalle compris) : elle
-alimente telle quelle le prompt de triage au run suivant. Les commandes
+alimente telle quelle le prompt de triage au run suivant. À la saisie manuelle
+(`--describe-folder`), les exemples du profilage LLM sont **purgés** — jamais
+laissés figés en contradiction avec la description — sauf si `--describe-examples`
+fournit explicitement une liste. Les commandes
 `--list-folders`, `--describe-folder` et `--reset-folder-description` (voir la
 section « Référence CLI » du [README](../README.md)) agissent sur ce state store
 seul, sans connexion IMAP ni LLM ; `--reset-folder-description` repasse la source
-à `llm` pour rendre la main au profilage. Sur une base existante créée avant
+à `llm` pour rendre la main au profilage (qui réécrit alors description et exemples). Sur une base existante créée avant
 l'introduction de la colonne, celle-ci est ajoutée à l'ouverture avec le défaut
 `llm` (les descriptions existantes étaient produites par le LLM).
 

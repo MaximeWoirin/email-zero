@@ -921,14 +921,24 @@ prompt_path = {:?}
         .upsert_folders("orange", &[("Factures", None, false)])
         .unwrap();
     store
-        .set_folder_profile("orange", "Factures", Some("profil llm initial"), &[])
+        .set_folder_profile(
+            "orange",
+            "Factures",
+            Some("profil llm initial"),
+            &[
+                "Confirmation de voyage".to_string(),
+                "Billetterie".to_string(),
+            ],
+        )
         .unwrap();
-    // l'utilisateur prend la main sur la description
+    // l'utilisateur prend la main sur la description, SANS exemples : les exemples
+    // LLM (qui contiendraient la billetterie) sont purges, jamais laisses figes
     store
         .set_user_folder_description(
             "orange",
             "Factures",
             "factures et recus UNIQUEMENT, jamais de marketing evenementiel",
+            &[],
         )
         .unwrap();
 
@@ -948,6 +958,14 @@ prompt_path = {:?}
     assert!(
         !prompt.contains("profil llm initial"),
         "l'ancien profil llm est remplace: {prompt}"
+    );
+    assert!(
+        prompt.contains("ex: aucun exemple"),
+        "les exemples LLM purges n'apparaissent plus: {prompt}"
+    );
+    assert!(
+        !prompt.contains("Billetterie"),
+        "aucun exemple contradictoire avec la description manuelle: {prompt}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

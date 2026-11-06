@@ -1108,15 +1108,22 @@ async fn dossier_a_description_utilisateur_est_epargne_par_le_profilage() {
     run_discovery(&mut mail, &llm, &mut store, "orange", &params())
         .await
         .unwrap();
+    // saisie manuelle SANS exemples : les exemples du profilage LLM sont purges
     store
         .set_user_folder_description(
             "orange",
             "Factures",
             "factures et recus UNIQUEMENT, jamais de marketing evenementiel",
+            &[],
         )
         .unwrap();
     let avant = store.folder_profile("orange", "Factures").unwrap().unwrap();
     assert_eq!(avant.description_source, DescriptionSource::User);
+    assert!(
+        avant.examples.is_empty(),
+        "exemples LLM purges a la saisie manuelle: {:?}",
+        avant.examples
+    );
 
     let stats = run_discovery(&mut mail, &llm, &mut store, "orange", &params())
         .await
@@ -1128,7 +1135,11 @@ async fn dossier_a_description_utilisateur_est_epargne_par_le_profilage() {
         apres.description, avant.description,
         "la description manuelle n'est pas modifiee par le run 2"
     );
-    assert_eq!(apres.examples, avant.examples, "exemples inchanges");
+    assert!(
+        apres.examples.is_empty(),
+        "les exemples purges a la saisie manuelle ne reviennent pas au run 2: {:?}",
+        apres.examples
+    );
     assert_eq!(apres.description_source, DescriptionSource::User);
     assert_eq!(
         apres.updated_at, avant.updated_at,
@@ -1178,7 +1189,7 @@ async fn dossier_a_description_utilisateur_conserve_aussi_en_fallback_llm_indisp
         .await
         .unwrap();
     store
-        .set_user_folder_description("orange", "Factures", "desc manuelle figee")
+        .set_user_folder_description("orange", "Factures", "desc manuelle figee", &[])
         .unwrap();
     let avant = store.folder_profile("orange", "Factures").unwrap().unwrap();
 
@@ -1189,7 +1200,10 @@ async fn dossier_a_description_utilisateur_conserve_aussi_en_fallback_llm_indisp
 
     let apres = store.folder_profile("orange", "Factures").unwrap().unwrap();
     assert_eq!(apres.description, avant.description);
-    assert_eq!(apres.examples, avant.examples);
+    assert!(
+        apres.examples.is_empty(),
+        "exemples purges, toujours vides en fallback"
+    );
     assert_eq!(apres.description_source, DescriptionSource::User);
     // Perso a pris le fallback (echantillons bruts, pas de description)
     let p = store.folder_profile("orange", "Perso").unwrap().unwrap();
@@ -1212,7 +1226,7 @@ async fn tous_les_dossiers_en_source_user_plus_de_requete_llm_du_tout() {
         .upsert_folders("orange", &[("Factures", None, false)])
         .unwrap();
     store
-        .set_user_folder_description("orange", "Factures", "desc manuelle")
+        .set_user_folder_description("orange", "Factures", "desc manuelle", &[])
         .unwrap();
 
     let stats = run_discovery(&mut mail, &llm, &mut store, "orange", &params())

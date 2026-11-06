@@ -387,18 +387,23 @@ impl Store {
     }
 
     /// Ecrit une description saisie manuellement (source `user`) : la decouverte
-    /// ne l'ecrasera plus. Rejette un dossier absent du state store (evite de
-    /// creer une entree fantome dans la whitelist via une faute de frappe).
+    /// ne l'ecrasera plus. `examples` remplace les exemples existants — passer une
+    /// tranche vide PURGE les exemples du profilage LLM (ils ne sont jamais laisses
+    /// figes en contradiction avec la description manuelle). Rejette un dossier absent
+    /// du state store (evite de creer une entree fantome dans la whitelist via une
+    /// faute de frappe).
     pub fn set_user_folder_description(
         &mut self,
         mailbox: &str,
         folder: &str,
         description: &str,
+        examples: &[String],
     ) -> Result<()> {
+        let examples_json = serde_json::to_string(examples)?;
         let changed = self.conn.execute(
-            "UPDATE folder SET description=?1, description_source='user', updated_at=?2
-             WHERE mailbox_id=?3 AND name=?4",
-            params![description, now_iso8601_utc(), mailbox, folder],
+            "UPDATE folder SET description=?1, examples=?2, description_source='user', updated_at=?3
+             WHERE mailbox_id=?4 AND name=?5",
+            params![description, examples_json, now_iso8601_utc(), mailbox, folder],
         )?;
         if changed == 0 {
             return Err(unknown_folder_error(mailbox, folder));
