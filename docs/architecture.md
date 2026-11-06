@@ -40,7 +40,7 @@ in-memory ou des mini-serveurs sur loopback.
 | `src/main.rs` | CLI (`--config`, `--dry-run`, `--once`, `--refresh-folders`), logging JSON, warning « mot de passe en clair », amorçage de la boucle daemon. |
 | `src/runner.rs` | Boucle daemon : poll de chaque boîte avec reconnexion à chaque itération, déclenchement du job de découverte quand il est dû (`--refresh-folders` force). Une boîte en échec est loguée mais ne tue pas le daemon. |
 | `src/pipeline.rs` | Pipeline de triage : `SEARCH UNSEEN` → dédup via le state store → batchs LLM en structured output (`BATCH_SCHEMA` v2) réassociés par `uid` → décision → `copy`/`move` (rien en `--dry-run`) → persistance `processed` + `triage_result`. |
-| `src/triage.rs` | Logique de décision pure : contrat de triage v2, routage (meilleur candidat de la whitelist), seuil de confiance, `TriageAction` (`none`/`copy`/`move`/`dry_run`). |
+| `src/triage.rs` | Logique de décision pure : routage du meilleur candidat de la whitelist, seuil de confiance, `TriageAction` (`none`/`copy`/`move`/`dry_run`). |
 | `src/discovery.rs` | Job de découverte des dossiers : `LIST` + attributs special-use RFC 6154, exclusions configurables, échantillonnage des derniers headers (`SEARCH ALL` + `BODY.PEEK[HEADER]`), **une seule requête LLM** de profilage par boîte (`PROFILING_SCHEMA`, prompt `prompts/discovery.md`), profils mis en cache dans `folder`. |
 | `src/store.rs` | State store SQLite : tables `mailbox` / `folder` / `processed` / `triage_result` / `discovery_run`, gestion de l'`UIDVALIDITY` (changement = retraitement du dossier). |
 | `src/config.rs` | Parsing et validation du TOML, références de secrets (`password_env` / `password_cmd` / `password`), `Debug` masqué des champs secrets. |
@@ -50,7 +50,7 @@ in-memory ou des mini-serveurs sur loopback.
 | `src/retry.rs` | Backoff exponentiel configuré (`max_attempts`, `backoff_base_secs`), fonction pure testable sans dormir. |
 | `src/error.rs` | Type d'erreur unique (`thiserror`). |
 
-## Contrat de triage v2 (#21)
+## Contrat de triage
 
 Le LLM reçoit un batch de mails (whitelist des dossiers avec description et
 exemples + mails avec leur `uid`) et répond en JSON strict (`BATCH_SCHEMA` v2) :
@@ -73,7 +73,7 @@ Routage appliqué côté Rust (`src/triage.rs`), pour chaque mail :
 - **Log de routage par mail** : une ligne avec `uid`, destination, confiance,
   nombre de candidats et règle appliquée.
 
-Le prompt de triage v2 vit dans `prompts/triage.md` — c'est un artefact versionné,
+Le prompt de triage vit dans `prompts/triage.md` — c'est un artefact versionné,
 isolé du code.
 
 ## Stratégie de tests à cinq niveaux
@@ -93,18 +93,17 @@ isolé du code.
    conteneur. Objectif : attraper en CI les divergences fake/serveur réel
    (`BODY.PEEK[HEADER]`, `\Seen` jamais posé, COPY/MOVE/UIDVALIDITY) avant le smoke.
 4. **E2E LLM (CI, boucle locale)** : le vrai client LLM (`src/clients/llm.rs`)
-   contre le vrai proxy LiteLLM utilisé en production — sidecar
+   contre un vrai proxy LiteLLM — sidecar
    `ghcr.io/berriai/litellm:v1.108.0` **épinglé**, loopback uniquement
    (`127.0.0.1:4000`), configuré en `mock_response` (`tests/litellm/config.yaml`),
    suite `#[ignore]` dans `tests/llm_litellm.rs`, job CI `llm-litellm`. Garde
    d'échec explicite après 60 s. Surface d'API réelle (bearer, codes d'erreur natifs
    du proxy 400/429/500, format de réponse) sans fournisseur, sans réseau externe,
    sans secret : `mock-ok` (batch complet), `mock-missing-verdict` (uid en
-   double/omis, contrat v2) et un test pipeline (fake IMAP + proxy réel). Objectif :
+   double/omis) et un test pipeline (fake IMAP + proxy réel). Objectif :
    attraper en CI les divergences fake/proxy réel sur la réponse LLM.
-5. **Smoke réel (manuel, hors CI)** : `--dry-run --once` contre les vraies boîtes
-   (Orange, Proton via Bridge). Jamais d'écriture en CI, jamais de secret dans les
-   tests.
+5. **Smoke réel (manuel, hors CI)** : `--dry-run --once` contre des boîtes
+   réelles. Jamais d'écriture en CI, jamais de secret dans les tests.
 
 Commandes :
 
@@ -114,8 +113,8 @@ cargo test --test imap_dovecot -- --ignored     # niveau 3 (sidecar Dovecot requ
 cargo test --test llm_litellm -- --ignored      # niveau 4 (sidecar LiteLLM requis)
 ```
 
-Chaque test est nommé d'après une décision de la spec design. CI dès le jour 1 :
-`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` —
+Chaque test est nommé d'après une décision de la spec design. La CI exige
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` et `cargo test` :
 aucun merge avec un warning.
 
 ## Décisions d'architecture clés
@@ -135,13 +134,12 @@ le raisonnement complet :
   s'active par un changement de config.
 - **Pull d'abord** (poll toutes les N minutes), architecture prête pour IDLE.
 
-## Décisions et écarts d'implémentation
+## Décisions d'implémentation notables
 
-Écarts actés par rapport au plan initial (le plan d'implémentation a été supprimé
-après cette migration ; la traçabilité vit désormais dans les issues et les PRs) :
+Choix pris pendant le développement, historiquement des écarts au cadrage initial :
 
-- **Crate unique** au lieu d'un workspace à plusieurs crates : pour un POC, moins de
-  cérémonie et une compilation plus rapide. Écart endossé.
+- **Crate unique** au lieu d'un workspace à plusieurs crates : moins de cérémonie
+  et une compilation plus rapide.
 - **Durcissement des secrets** : `Debug` custom sur `MailboxConfig` masquant les
   champs secrets (`***`, test de rédaction dans `tests/secrets.rs`) ; lecture de
   l'env **injectée** dans `resolve_password(&dyn Fn(&str) -> Option<String>)` (aucun
@@ -150,17 +148,17 @@ après cette migration ; la traçabilité vit désormais dans les issues et les 
   warning « mot de passe en clair » branché au chargement de la config dans `main`.
 - **`BODY.PEEK[]` partout** : jamais de `\Seen` posé, ni sur les headers ni sur le
   corps (fetch de l'échantillonnage de découverte inclus).
-- **`base_url` https exigé hors loopback** — la clé API part en bearer — **et
-  `host.docker.internal` désormais accepté en http** (fix compose : `extra_hosts`
-  `host-gateway`, `config.toml` ajouté au `.gitignore`). `127.0.0.1` / `localhost`
-  / `::1` restent acceptés en http pour les tests et les proxys locaux.
-- **Pas de `rustfmt.toml` / `clippy.toml`** : les defaults suffisent. Non bloquant.
+- **`base_url` https exigé hors loopback** — la clé API part en bearer — `host.docker.internal`
+  est aussi accepté en http (proxy LLM sur l'hôte Docker, via `extra_hosts`) ;
+  `127.0.0.1` / `localhost` / `::1` restent acceptés en http pour les tests et les
+  proxys locaux.
+- **Pas de `rustfmt.toml` / `clippy.toml`** : les defaults suffisent.
 
 ## Notes techniques différées
 
-- `Store::pending_uids` fait un COUNT par UID (N+1) : OK à l'échelle POC d'une
-  boîte perso, à rebattre en un seul `IN (...)` si le backfill historique (v2)
-  arrive.
-- Backfill de l'historique via API Batch : **option v2** — latence ~24 h
+- `Store::pending_uids` fait un COUNT par UID (N+1) : acceptable à l'échelle d'une
+  ou deux boîtes personnelles, à rebattre en un seul `IN (...)` si le traitement
+  de l'historique arrive.
+- Traitement de l'historique via API Batch : envisagé pour plus tard — latence ~24 h
   incompatible avec le tri à la réception, mais économie réelle sur un gros
   volume ; hors de la boucle de tri.
