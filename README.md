@@ -102,3 +102,4 @@ LiteLLM) — est détaillée dans [docs/architecture.md](docs/architecture.md).
 - [Configuration](docs/configuration.md) — référence TOML, secrets, déploiement
 - [Spec design v1](docs/superpowers/specs/2026-11-01-email-zero-design.md) — référence de conception
 - [Contribuer](CONTRIBUTING.md) — checklist de PR et règles de contenu de la documentation
+- [Instructions pour agents](AGENTS.md) — consignes de travail pour les agents IA
