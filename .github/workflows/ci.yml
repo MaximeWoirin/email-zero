@@ -79,3 +79,56 @@ jobs:
       - name: Logs Dovecot (si echec)
         if: failure()
         run: docker logs ez-dovecot
+
+  # Etage E2E LLM (issue #22) : le vrai client LLM contre le vrai proxy LiteLLM
+  # utilise en production, en conteneur, publie sur le loopback uniquement, configure
+  # avec `mock_response` (tests/litellm/config.yaml) : surface d'API reelle (bearer,
+  # codes d'erreur natifs 400/429/500, format de reponse) sans fournisseur, sans
+  # reseau externe, sans secret reel (master key factice injectee par env).
+  llm-litellm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Demarrer le sidecar LiteLLM (loopback, mock_response)
+        run: |
+          set -euo pipefail
+          # Image epinglee sur un tag de release precis (v1.108.0, 2026-11-04) et
+          # non sur un tag flottant : le comportement du job ne change que via ce depot.
+          docker run -d --name ez-litellm \
+            -p 127.0.0.1:4000:4000 \
+            -e LITELLM_MASTER_KEY=sk-e2e-cle-factice \
+            -e DO_NOT_TRACK=1 \
+            -v "$PWD/tests/litellm/config.yaml:/app/config.yaml:ro" \
+            ghcr.io/berriai/litellm:v1.108.0 \
+            --config /app/config.yaml --port 4000
+          for i in $(seq 1 60); do
+            if curl -sf -H "Authorization: Bearer sk-e2e-cle-factice" \
+                 http://127.0.0.1:4000/v1/models > /dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          # Garde d'echec explicite : si le proxy ne repond jamais, le diagnostic
+          # tombe ici avec les logs, pas plus tard au premier test.
+          if ! curl -sf -H "Authorization: Bearer sk-e2e-cle-factice" \
+               http://127.0.0.1:4000/v1/models > /dev/null 2>&1; then
+            echo "LiteLLM ne repond pas sur 127.0.0.1:4000 apres 60s" >&2
+            docker logs ez-litellm >&2 || true
+            exit 1
+          fi
+          curl -sf -H "Authorization: Bearer sk-e2e-cle-factice" http://127.0.0.1:4000/v1/models
+
+      - name: Tests du client LLM reel contre le proxy LiteLLM reel
+        env:
+          EZ_TEST_LITELLM_BASE_URL: http://127.0.0.1:4000/v1
+          EZ_TEST_LITELLM_API_KEY: sk-e2e-cle-factice
+        run: cargo test --test llm_litellm -- --ignored --test-threads=1
+
+      - name: Logs LiteLLM (si echec)
+        if: failure()
+        run: docker logs ez-litellm

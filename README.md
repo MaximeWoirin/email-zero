@@ -56,6 +56,19 @@ Objectif : attraper en CI les divergences fake/serveur reel (ex. #16,
 `BODY.PEEK[HEADER]` -> `BODY[HEADER]`, `\Seen` jamais pose, COPY/MOVE/UIDVALIDITY)
 avant le smoke reel.
 
+Etage E2E LLM en CI (`llm-litellm`, issue #22) : le vrai client LLM
+(`src/clients/llm.rs`) est teste contre un conteneur LiteLLM reel (le proxy de
+prod), publie sur le loopback uniquement, configure avec `mock_response`
+(config `tests/litellm/config.yaml`, suite `#[ignore]` dans `tests/llm_litellm.rs`) :
+surface d'API reelle (bearer, codes d'erreur natifs du proxy 400/429/500, format
+de reponse) sans fournisseur, sans reseau externe, sans secret, contenu
+deterministe par modele au format du contrat v2 (`candidates`, #21) :
+`mock-ok` batch complet, `mock-missing-verdict` reproduction du smoke #21
+(uid en double/omis), et un test pipeline (fake IMAP + proxy reel) qui valide
+de bout en bout la gestion de la divergence (fusion des candidats, mail omis
+laisse en place, poll reussi). Objectif : attraper en CI les divergences
+fake/proxy reel sur la reponse LLM avant le smoke reel.
+
 Jalon 3 en cours : conteneur + déploiement POC. `Dockerfile` multi-stage
 (cross-compile `aarch64-unknown-linux-gnu` pour le Pi 3 B+ depuis n'importe quel
 hôte, runtime `debian:bookworm-slim` avec user non-root), `docker-compose.yml`
@@ -74,6 +87,8 @@ cargo run -- --config config.toml --dry-run --once
 cargo test                             # unitaires + integration, zero reseau externe
 # etage conformite RFC (client reel contre Dovecot, job CI `imap-dovecot`) :
 cargo test --test imap_dovecot -- --ignored
+# etage E2E LLM (client reel contre le proxy LiteLLM reel, job CI `llm-litellm`) :
+cargo test --test llm_litellm -- --ignored
 ```
 
 ## Déployer (POC conteneur, cible Pi 3 B+ arm64)

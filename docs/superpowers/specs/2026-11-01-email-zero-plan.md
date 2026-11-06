@@ -40,11 +40,12 @@ pub trait LlmClient {
 }
 ```
 
-**Quatre niveaux de tests** :
+**Cinq niveaux de tests** :
 1. **Unitaires** (rapides, par fonction) : parsing config, logique UIDVALIDITY, validation whitelist, seuil de confiance.
 2. **Intégration** (le cœur, ce qu'on cherche) : le pipeline complet — fake IMAP rempli de mails, fake LLM avec des réponses scriptées, assertions sur les actions produites et le contenu du state store. Zéro réseau.
 3. **Conformité RFC (CI, boucle locale)** : le vrai client IMAP contre un vrai serveur — conteneur Dovecot sur le loopback, compte factice, fixtures maildir committées (`tests/fixtures/maildir/`, `tests/imap_dovecot.rs` en `#[ignore]`, job CI `imap-dovecot`, issue #17). attrape en CI les divergences fake/serveur réel (ex. #16) avant le smoke.
-4. **Smoke réel** (hors CI, manuel) : `--dry-run` contre les vraies boîtes Orange et Proton. Jamais d'écriture en CI, jamais de secret dans les tests.
+4. **E2E LLM (CI, boucle locale)** : le vrai client LLM contre le vrai proxy LiteLLM utilisé en prod — conteneur sur le loopback, `mock_response` déterministe par modèle (`tests/litellm/config.yaml`, `tests/llm_litellm.rs` en `#[ignore]`, job CI `llm-litellm`, issue #22) : bearer, codes d'erreur natifs du proxy (400/429/500), format de réponse, sans fournisseur ni secret. attrape en CI les divergences fake/proxy réel sur la réponse LLM (smoke #21 : uid en double / omis) avant le smoke.
+5. **Smoke réel** (hors CI, manuel) : `--dry-run` contre les vraies boîtes Orange et Proton. Jamais d'écriture en CI, jamais de secret dans les tests.
 
 **Chaque test est nommé d'après une décision de la spec** : `test_erreurs`, `confidence_sous_seuil_reste_dans_inbox`, `uidvalidity_change_retraite_le_dossier`, etc. La spec est la source des tests.
 
@@ -63,6 +64,7 @@ pub trait LlmClient {
 | 2c | Job de découverte des dossiers (`src/discovery.rs` : LIST + special-use RFC 6154, INBOX hors whitelist, `exclude_folders` par nom ou special-use, échantillonnage des N derniers headers `SEARCH ALL` + `BODY.PEEK[HEADER]`, **une seule requête LLM** de profilage (`PROFILING_SCHEMA`, réassociation par `name`, prompt `prompts/discovery.md`), profils en cache `folder` avec `updated_at`, `discovery_run` ok/fallback/error, fallback = échantillons bruts sans description) câblé dans le daemon (due si aucun run ou `discovery.interval_secs` écoulé depuis le dernier run, `--refresh-folders` force) + `MailClient::search_all` + `parse_iso8601_utc` + `examples_in_prompt` bornant les exemples dans le prompt de triage | #13 (`vibe/jalon-2c-discovery-dossiers-c0cb9f`) | mergée |
 | 3 | Conteneur + déploiement POC (jalon 8 ci-dessous) : `Dockerfile` multi-stage (builder sur `$BUILDPLATFORM`, cross-compile `aarch64-unknown-linux-gnu` via `gcc-aarch64-linux-gnu`, runtime `debian:bookworm-slim` + user non-root uid 10001, `prompts/` embarqués), `.dockerignore`, `docker-compose.yml` prod (`email-zero` + `bridge` Proton : config montée en ro, `data/` state store, secrets via `.env`/`env_file`, ports Bridge en loopback uniquement, image bridge surchargeable `BRIDGE_IMAGE`), `.env.example`, CI `Docker` (build `linux/arm64` + smoke `--version` sous QEMU). Smoke réel `--dry-run` sur Orange/Proton : **manuel, hors CI** | #14 (`vibe/jalon-3-conteneur-deploiement-a419eb`) | mergée |
 | 2b+ | Étage de conformité RFC en CI : client IMAP réel contre un conteneur Dovecot (loopback uniquement, compte factice, fixtures maildir committées `tests/fixtures/maildir/`, config `tests/dovecot/dovecot.conf`, suite `#[ignore]` `tests/imap_dovecot.rs`, job CI `imap-dovecot`) — attrape les divergences fake/serveur réel (ex. #16) avant le smoke réel | #20 (`vibe/issue-17-dovecot-ci-4d7e2a`, issue #17) | en revue |
+| 2b++ | Étage E2E LLM en CI : client LLM réel contre un conteneur LiteLLM (loopback uniquement, `mock_response` déterministe par scénario `tests/litellm/config.yaml`, suite `#[ignore]` `tests/llm_litellm.rs`, job CI `llm-litellm`) — couvre le client LLM, pas seulement l'IMAP (scindé de #17 à la revue de #20, issue #22) | #24 (`vibe/issue-22-litellm-mock-894db8`, issue #22) | en revue |
 
 ## Plan détaillé par jalon (référence TDD)
 
