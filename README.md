@@ -1,95 +1,71 @@
 # Email Zero
 
-Prétraitement d'emails par IA, headless, en Rust : un worker qui lit les nouveaux
+[![CI](https://github.com/MaximeWoirin/email-zero/actions/workflows/ci.yml/badge.svg)](https://github.com/MaximeWoirin/email-zero/actions/workflows/ci.yml)
+[![Docker](https://github.com/MaximeWoirin/email-zero/actions/workflows/docker.yml/badge.svg)](https://github.com/MaximeWoirin/email-zero/actions/workflows/docker.yml)
+[![CodeQL](https://github.com/MaximeWoirin/email-zero/actions/workflows/codeql.yml/badge.svg)](https://github.com/MaximeWoirin/email-zero/actions/workflows/codeql.yml)
+
+Pré-traitement d'emails par IA, headless, en Rust : un worker qui lit les nouveaux
 mails en IMAP, les fait évaluer par un LLM (catégorie, criticité, résumé) et
 écrit le tri directement dans les dossiers de la boîte. Le client mail habituel
 reste l'interface unique — pas d'UI.
 
+**Pour qui / pourquoi** : pour qui veut garder une boîte de réception lisible sans
+y passer ses soirées — le tri se fait dans les dossiers existants de la boîte, donc
+visible depuis n'importe quel client mail, sans nouvel outil à ouvrir.
+
+Le badge CI couvre `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`
+et les deux étages en conteneur (`imap-dovecot`, `llm-litellm`) ; le badge Docker
+couvre le build `linux/arm64` et le smoke `--version` sous QEMU.
+
+## Comment ça marche
+
+Un daemon poll chaque boîte configurée, en cinq étapes :
+
+```mermaid
+flowchart LR
+    A["Poll IMAP<br/>SEARCH UNSEEN"] --> B["Dédup<br/>state store SQLite"]
+    B --> C["Batch LLM<br/>structured output"]
+    C --> D["Décision<br/>whitelist + seuil de confiance"]
+    D --> E["copy / move<br/>IMAP"]
+```
+
+1. **Poll** : `SEARCH UNSEEN` sur INBOX. Tous les fetchs passent en `BODY.PEEK[]` :
+   le flag `\Seen` n'est jamais posé.
+2. **Dédup** : les UIDs déjà traités (state store SQLite, scopés par `UIDVALIDITY`)
+   sont exclus — on cible les mails « non traités », pas « nouveaux ».
+3. **Évaluation LLM** : les mails sont envoyés par batchs de `batch_size` à un
+   endpoint OpenAI-compatible (LiteLLM…) en structured output, et réassociés par
+   leur `uid` embarqué dans le prompt.
+4. **Décision** (contrat de triage v2) : le LLM renvoie par mail une liste ordonnée
+   de dossiers plausibles (`candidates`) ; le moteur retient le meilleur candidat
+   de la whitelist (confiance max, égalité → le premier de la liste). Si cette
+   confiance est sous le seuil configuré, le mail reste dans INBOX.
+5. **Action** : `copy` (défaut) ou `move` vers le dossier retenu, puis persistance
+   dans le state store. `--dry-run` évalue et affiche sans rien écrire.
+
+## Ce qu'Email Zero ne fait pas
+
+- Jamais d'envoi de mail.
+- Jamais de `\Seen` : aucun flag n'est modifié, les mails restent non lus.
+- Jamais de création de dossier : la cible doit appartenir à la whitelist découverte.
+- Pas d'UI : le client mail habituel reste l'interface.
+- Pas de perte de mail : l'action par défaut est la copie, jamais la suppression.
+
 ## Docs
 
-- [Spec design v1](docs/superpowers/specs/2026-11-01-email-zero-design.md)
-- [Plan d'implémentation — TDD](docs/superpowers/specs/2026-11-01-email-zero-plan.md)
+- [Architecture](docs/architecture.md) — composants, contrat de triage v2, stratégie de tests
+- [Configuration](docs/configuration.md) — référence complète du TOML, secrets, déploiement
+- [Spec design v1](docs/superpowers/specs/2026-11-01-email-zero-design.md) — référence de conception
 
-## Statut
-
-Jalon 0 livré : scaffold Rust (binaire `email-zero`, lib `config`/`ports`/`error`),
-frontières IMAP/LLM en traits injectés, config TOML validée (secrets par
-`*_env` uniquement), CI GitHub (fmt + clippy `-D warnings` + test).
-
-Jalon 1 livré : state store SQLite (`src/store.rs`, schéma de la spec :
-`mailbox`/`folder`/`processed`/`triage_result`/`discovery_run`) et logique de
-décision pure (`src/triage.rs`) : whitelist string-match exacte côté Rust,
-seuil de confiance (sous le seuil -> INBOX), action `copy`/`move`/`dry_run`,
-gestion de l'`UIDVALIDITY` (changement = retraitement du dossier).
-Méthodologie : TDD stricte, frontières IMAP/LLM en traits injectés.
-
-Jalon 2a livré : moteur de pipeline de triage async (`src/pipeline.rs`), testé en
-intégration avec fake IMAP + fake LLM scripté (zéro réseau, `tests/pipeline.rs`) :
-`SEARCH UNSEEN` → dédup via le state store (changement d'`UIDVALIDITY` = retraitement
-du dossier) → batchs LLM en structured output réassociés par `uid` → décision pure
-(whitelist, seuil de confiance) → `copy`/`move` sur le serveur (aucune écriture en
-`--dry-run`) → persistance `processed` + `triage_result`. Le prompt de triage v2 vit
-dans `prompts/triage.md` (contrat v2 : liste ordonnée de candidats par mail, validation
-de la réponse LLM, log de routage par mail), le chemin du state store dans `[store].path` du TOML.
-Jalon 2b livré : clients réels IMAP (`async-imap` + rustls, `src/clients/imap.rs`) et LLM
-OpenAI-compatible (`reqwest`, `src/clients/llm.rs`), retry/backoff exponentiel configurés
-(`[imap.retry]`/`[llm.retry]`, `src/retry.rs`) ; `main` connecte chaque boîte et lance
-`pipeline::run` sur INBOX (`--once` = un poll puis sortie, sinon poll toutes les
-`poll_interval_secs`). Tests sans réseau externe : mini-serveurs IMAP/HTTP sur loopback.
-Jalon 2c livré : job de découverte des dossiers (`src/discovery.rs`), câblé dans
-le daemon (au premier run ou quand `discovery.interval_secs` est écoulé,
-`--refresh-folders` force) : `LIST` + special-use RFC 6154 → whitelist dans
-`folder` (INBOX et `exclude_folders` exclus, `Archive` conservé), échantillonnage
-des `sample_per_folder` derniers headers par dossier (`SEARCH ALL` +
-`BODY.PEEK[HEADER]`, jamais de `\Seen`), **une seule requête LLM** de profilage
-par boîte (prompt `prompts/discovery.md`, schéma strict `PROFILING_SCHEMA`,
-réassociation par nom de dossier) → description + exemples en cache, historique
-`discovery_run` (`ok` / `fallback` LLM indisponible avec échantillons bruts sans
-description / `error`). Tests d'intégration zéro réseau externe (fakes + mini-serveurs
-loopback), dont un e2e `poll_mailbox` avec `discover=true`.
-
-Etage de conformite RFC en CI (`imap-dovecot`, issue #17) : le vrai client IMAP
-(`src/clients/imap.rs`) est teste contre un conteneur Dovecot reel, publie sur le
-loopback uniquement, avec les fixtures maildir committes (`tests/fixtures/maildir/`,
-config `tests/dovecot/dovecot.conf`, suite `#[ignore]` dans `tests/imap_dovecot.rs`).
-Objectif : attraper en CI les divergences fake/serveur reel (ex. #16,
-`BODY.PEEK[HEADER]` -> `BODY[HEADER]`, `\Seen` jamais pose, COPY/MOVE/UIDVALIDITY)
-avant le smoke reel.
-
-Etage E2E LLM en CI (`llm-litellm`, issue #22) : le vrai client LLM
-(`src/clients/llm.rs`) est teste contre un conteneur LiteLLM reel (le proxy de
-prod), publie sur le loopback uniquement, configure avec `mock_response`
-(config `tests/litellm/config.yaml`, suite `#[ignore]` dans `tests/llm_litellm.rs`) :
-surface d'API reelle (bearer, codes d'erreur natifs du proxy 400/429/500, format
-de reponse) sans fournisseur, sans reseau externe, sans secret, contenu
-deterministe par modele au format du contrat v2 (`candidates`, #21) :
-`mock-ok` batch complet, `mock-missing-verdict` reproduction du smoke #21
-(uid en double/omis), et un test pipeline (fake IMAP + proxy reel) qui valide
-de bout en bout la gestion de la divergence (fusion des candidats, mail omis
-laisse en place, poll reussi). Objectif : attraper en CI les divergences
-fake/proxy reel sur la reponse LLM avant le smoke reel.
-
-Jalon 3 en cours : conteneur + déploiement POC. `Dockerfile` multi-stage
-(cross-compile `aarch64-unknown-linux-gnu` pour le Pi 3 B+ depuis n'importe quel
-hôte, runtime `debian:bookworm-slim` avec user non-root), `docker-compose.yml`
-de prod (`email-zero` + `bridge` Proton : `config.toml` monté en lecture seule,
-`data/` pour le state store, secrets via `.env` (`env_file`), ports Bridge
-publiés sur le loopback uniquement), CI `Docker` (build image `linux/arm64` +
-smoke `--version` sous QEMU). Reste manuel côté utilisateur : le smoke réel
-`--dry-run --once` sur Orange/Proton, revue des logs JSON, puis premier run
-réel en `copy` avant de passer à `move`.
-
-## Lancer
+## Démarrage rapide
 
 ```sh
 cp config.example.toml config.toml   # puis renseigner les noms de variables d'env
 cargo run -- --config config.toml --dry-run --once
-cargo test                             # unitaires + integration, zero reseau externe
-# etage conformite RFC (client reel contre Dovecot, job CI `imap-dovecot`) :
-cargo test --test imap_dovecot -- --ignored
-# etage E2E LLM (client reel contre le proxy LiteLLM reel, job CI `llm-litellm`) :
-cargo test --test llm_litellm -- --ignored
 ```
+
+Voir [docs/configuration.md](docs/configuration.md) pour la référence complète du
+fichier TOML et la gestion des secrets.
 
 ## Déployer (POC conteneur, cible Pi 3 B+ arm64)
 
@@ -105,3 +81,29 @@ docker compose logs -f email-zero         # logs JSON
 
 Build de l'image seule :
 `docker buildx build --platform linux/arm64 -t email-zero:local --load .`
+
+## Développement
+
+```sh
+cargo test                             # unitaires + intégration, zéro réseau externe
+# étage conformité RFC (client réel contre Dovecot, job CI `imap-dovecot`) :
+cargo test --test imap_dovecot -- --ignored
+# étage E2E LLM (client réel contre le proxy LiteLLM réel, job CI `llm-litellm`) :
+cargo test --test llm_litellm -- --ignored
+```
+
+Philosophie : TDD stricte (aucune ligne de production sans test qui échoue d'abord),
+frontières externes (IMAP, LLM) en traits injectés (`src/ports.rs`), mockés dans les
+tests d'intégration.
+
+**Cinq niveaux de tests** (détails et architecture des étages CI dans
+[docs/architecture.md](docs/architecture.md)) :
+
+1. **Unitaires** : parsing config, logique `UIDVALIDITY`, whitelist, seuil de confiance.
+2. **Intégration** : pipeline complet avec fake IMAP + fake LLM scripté, zéro réseau.
+3. **Conformité RFC (CI)** : le vrai client IMAP contre un vrai serveur Dovecot en
+   conteneur, publié sur le loopback uniquement.
+4. **E2E LLM (CI)** : le vrai client LLM contre un vrai proxy LiteLLM configuré en
+   `mock_response`, publié sur le loopback uniquement.
+5. **Smoke réel (manuel, hors CI)** : `--dry-run --once` contre les vraies boîtes —
+   jamais d'écriture ni de secret en CI.
