@@ -216,6 +216,7 @@ async fn end_to_end_client_imap_reel_client_llm_reel_pipeline_complet() {
             max_attempts: 1,
             backoff_base_secs: 0,
         },
+        std::time::Duration::from_secs(30),
     );
     let llm = OpenAiLlmClient::new(&cfg.llm, &|name| {
         assert_eq!(name, "EZ_TEST_KEY");

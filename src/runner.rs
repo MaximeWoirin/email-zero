@@ -1,12 +1,14 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 use crate::clients::imap::{connect, BoxSession, ImapMailClient};
-use crate::clients::llm::OpenAiLlmClient;
 use crate::config::{Config, MailboxConfig};
 use crate::discovery::{discovery_params_for, run_discovery};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::pipeline::{pipeline_config_for, run, RunStats};
+use crate::ports::LlmClient;
+use crate::retry::{backoff_delay, sleep_tokio};
 use crate::store::{parse_iso8601_utc, Store};
 
 /// Connecteur IMAP injectable : reel (`connect`) en prod, fake en test.
@@ -27,14 +29,16 @@ pub fn discovery_due(store: &Store, mailbox: &str, interval_secs: u64) -> Result
     }
 }
 
-/// Un poll sur une boite : connexion neuve (le daemon reconnecte a chaque
-/// iteration — une session inactive pendant poll_interval_secs est deconnectee
-/// par le serveur), job de decouverte des dossiers si `discover` (jalon 2c,
-/// sur la meme session, avant le tri : la whitelist vient du store), puis
-/// pipeline::run sur INBOX, log des stats.
-pub async fn poll_mailbox(
+/// Un poll sur une boite, avec resilience de la connexion (issue #30) :
+/// connexion neuve, puis poll ; si la connexion est perdue EN COURS de poll
+/// (`Error::ImapConnectionLost` : timeout de lecture, EOF/BYE serveur), on
+/// rouvre la session et on relance le poll jusqu'a `imap.max_reconnects`
+/// reconnexions. La reprise repart du state store (`pending_uids` exclut les
+/// uids deja traites) : aucun doublon de traitement. L'echec final du poll ne
+/// survient qu'apres ces tentatives, pas a la premiere coupure.
+pub async fn poll_mailbox<L: LlmClient>(
     cfg: &Config,
-    llm: &OpenAiLlmClient,
+    llm: &L,
     store: &mut Store,
     mb: &MailboxConfig,
     opts: PollOptions,
@@ -42,11 +46,59 @@ pub async fn poll_mailbox(
     password_lookup: &dyn Fn(&str) -> Option<String>,
 ) -> Result<RunStats> {
     let password = mb.resolve_password(password_lookup)?;
-    let session = connect_fn(mb.clone(), password).await?;
-    let mut mail = ImapMailClient::new(session, cfg.imap_retry.retry.clone());
+    let imap = &cfg.imap_retry;
+    let read_timeout = Duration::from_secs(imap.timeout_secs);
+    let mut reconnects = 0u32;
+    loop {
+        let session = connect_fn(mb.clone(), password.clone()).await?;
+        let mut mail = ImapMailClient::new(session, imap.retry.clone(), read_timeout);
+        match poll_mailbox_once(cfg, llm, store, mb, opts, &mut mail).await {
+            Ok(stats) => {
+                if reconnects > 0 {
+                    tracing::info!(
+                        mailbox = %mb.id,
+                        reconnects,
+                        "poll termine apres reconnexion(s), reprise depuis le state store"
+                    );
+                }
+                return Ok(stats);
+            }
+            Err(e)
+                if matches!(e, Error::ImapConnectionLost(_))
+                    && reconnects < imap.max_reconnects =>
+            {
+                reconnects += 1;
+                tracing::warn!(
+                    mailbox = %mb.id,
+                    reconnects,
+                    max_reconnects = imap.max_reconnects,
+                    error = %e,
+                    "connexion IMAP perdue en cours de poll, reconnexion et reprise"
+                );
+                let delay = backoff_delay(&imap.retry, reconnects);
+                if !delay.is_zero() {
+                    sleep_tokio(delay).await;
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Le contenu d'un essai de poll sur une session deja ouverte : decouverte des
+/// dossiers si `discover` (jalon 2c, avant le tri : la whitelist vient du store),
+/// puis pipeline::run sur INBOX, log des stats.
+async fn poll_mailbox_once<L: LlmClient>(
+    cfg: &Config,
+    llm: &L,
+    store: &mut Store,
+    mb: &MailboxConfig,
+    opts: PollOptions,
+    mail: &mut ImapMailClient,
+) -> Result<RunStats> {
     if opts.discover {
         let dp = discovery_params_for(cfg)?;
-        let dstats = run_discovery(&mut mail, llm, store, &mb.id, &dp).await?;
+        let dstats = run_discovery(mail, llm, store, &mb.id, &dp).await?;
         tracing::info!(
             mailbox = %mb.id,
             folders_seen = dstats.folders_seen,
@@ -66,7 +118,7 @@ pub async fn poll_mailbox(
         max_body_chars = pc.max_body_chars,
         "pipeline config construite"
     );
-    let stats = run(&mut mail, llm, store, &mb.id, "INBOX", &pc).await?;
+    let stats = run(mail, llm, store, &mb.id, "INBOX", &pc).await?;
     tracing::info!(
         mailbox = %mb.id,
         scanned = stats.scanned,
@@ -102,9 +154,9 @@ pub struct DaemonDeps<'a> {
 /// un seul tour puis sortie ; sinon sommeil de min(poll_interval_secs) entre
 /// deux tours. La decouverte des dossiers tourne quand elle est due
 /// (`discovery.interval_secs` depuis le dernier run, ou `refresh_folders`).
-pub async fn daemon_loop(
+pub async fn daemon_loop<L: LlmClient>(
     cfg: &Config,
-    llm: &OpenAiLlmClient,
+    llm: &L,
     store: &mut Store,
     once: bool,
     dry_run: bool,

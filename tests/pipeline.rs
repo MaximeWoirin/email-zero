@@ -45,6 +45,7 @@ struct FakeMail {
     mails: HashMap<(String, u32), ParsedMail>,
     copies: RefCell<Vec<(u32, String)>>,
     moves: RefCell<Vec<(u32, String)>>,
+    noops: std::cell::Cell<u32>,
 }
 
 impl FakeMail {
@@ -55,6 +56,7 @@ impl FakeMail {
             mails: HashMap::new(),
             copies: RefCell::new(Vec::new()),
             moves: RefCell::new(Vec::new()),
+            noops: std::cell::Cell::new(0),
         };
         m.uidvalidity.insert("INBOX".into(), uidvalidity);
         m
@@ -118,6 +120,32 @@ impl MailClient for FakeMail {
     async fn r#move(&mut self, _folder: &str, uid: u32, target: &str) -> Result<()> {
         self.moves.borrow_mut().push((uid, target.to_string()));
         Ok(())
+    }
+    async fn noop(&mut self) -> Result<()> {
+        self.noops.set(self.noops.get() + 1);
+        Ok(())
+    }
+}
+
+/// Fake LLM lent : dort `delay` avant de rendre sa reponse scriptee, pour
+/// simuler un appel LLM reel (~10 s en smoke) pendant lequel le keepalive
+/// NOOP doit tourner (issue #30).
+struct SlowLlm {
+    delay: std::time::Duration,
+    response: serde_json::Value,
+}
+
+impl LlmClient for SlowLlm {
+    async fn chat_json<T: DeserializeOwned>(&self, _req: JsonChatRequest) -> Result<T> {
+        tokio::time::sleep(self.delay).await;
+        Ok(serde_json::from_value(self.response.clone())?)
+    }
+    async fn chat_json_schema<T: DeserializeOwned>(
+        &self,
+        req: JsonChatRequest,
+        _schema: &str,
+    ) -> Result<T> {
+        self.chat_json(req).await
     }
 }
 
@@ -220,6 +248,7 @@ fn setup() -> (Store, PipelineConfig) {
         temperature: 0.2,
         top_p: 1.0,
         max_tokens: 4096,
+        keepalive: None,
     };
     (store, cfg)
 }
@@ -804,4 +833,46 @@ prompt_path = {:?}
     assert!(!pc_off.dry_run);
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn keepalive_noop_periodique_pendant_un_appel_llm_lent() {
+    let (mut store, mut cfg) = setup();
+    cfg.keepalive = Some(std::time::Duration::from_millis(20));
+    let mut mail = FakeMail::new(7);
+    mail.add_mail(1, "edf@edf.fr", "Facture octobre", "votre facture");
+    let llm = SlowLlm {
+        delay: std::time::Duration::from_millis(150),
+        response: batch(vec![verdict(1, &[candidate("Factures", 0.95)])]),
+    };
+
+    let stats = run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
+        .await
+        .unwrap();
+
+    assert_eq!(stats.copied, 1);
+    assert!(
+        mail.noops.get() >= 3,
+        "des NOOP doivent etre emis pendant l'appel LLM lent ({}s/20ms) : {} NOOP",
+        150,
+        mail.noops.get()
+    );
+}
+
+#[tokio::test]
+async fn keepalive_desactive_aucun_noop_pendant_l_appel_llm() {
+    let (mut store, cfg) = setup();
+    assert!(cfg.keepalive.is_none(), "setup() = keepalive desactive");
+    let mut mail = FakeMail::new(7);
+    mail.add_mail(1, "edf@edf.fr", "Facture octobre", "votre facture");
+    let llm = SlowLlm {
+        delay: std::time::Duration::from_millis(60),
+        response: batch(vec![verdict(1, &[candidate("Factures", 0.95)])]),
+    };
+
+    run(&mut mail, &llm, &mut store, "orange", "INBOX", &cfg)
+        .await
+        .unwrap();
+
+    assert_eq!(mail.noops.get(), 0);
 }

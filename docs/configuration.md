@@ -50,6 +50,12 @@ la boîte.
 
 ## `[imap]` — section IMAP
 
+| Clé | Type | Défaut | Rôle |
+|-----|------|--------|------|
+| `timeout_secs` | entier | `30` | Timeout de lecture de chaque opération IMAP (commande + réponse). Une connexion fermée silencieusement par le serveur est déclarée morte en ~30 s au lieu de bloquer jusqu'aux timers TCP (~4 min 30). `0` = désactivé (déconseillé). |
+| `keepalive_secs` | entier | `45` | `NOOP` périodique émis pendant les appels LLM pour empêcher le serveur de juger la session inactive. `0` = désactivé. |
+| `max_reconnects` | entier | `3` | Nombre de reconnexions avec reprise en cours de poll avant d'abandonner : la session est rouverte et le poll relancé depuis le state store (les uids déjà traités ne sont pas rejoués — aucun doublon). |
+
 ### `[imap.retry]` — retry IMAP
 
 | Clé | Type | Défaut | Rôle |

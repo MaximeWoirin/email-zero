@@ -84,6 +84,19 @@ pub struct LlmConfig {
 pub struct ImapSection {
     #[serde(default)]
     pub retry: RetryConfig,
+    /// Timeout de lecture d'une operation IMAP (commande + reponse), en secondes.
+    /// 0 = desactive (deconseille : une connexion a moitie fermee bloque alors
+    /// jusqu'aux timers TCP, ~4 min 30 observees en smoke, issue #30).
+    #[serde(default = "default_imap_timeout_secs")]
+    pub timeout_secs: u64,
+    /// NOOP periodique pendant les appels LLM (session idle), en secondes.
+    /// 0 = desactive (issue #30).
+    #[serde(default = "default_imap_keepalive_secs")]
+    pub keepalive_secs: u64,
+    /// Nombre de reconnexions avec reprise en cours de poll avant d'abandonner
+    /// (la reprise repart du state store, sans doublon, issue #30).
+    #[serde(default = "default_imap_max_reconnects")]
+    pub max_reconnects: u32,
 }
 
 impl Default for ImapSection {
@@ -93,6 +106,9 @@ impl Default for ImapSection {
                 max_attempts: default_max_attempts(),
                 backoff_base_secs: 2,
             },
+            timeout_secs: default_imap_timeout_secs(),
+            keepalive_secs: default_imap_keepalive_secs(),
+            max_reconnects: default_imap_max_reconnects(),
         }
     }
 }
@@ -314,6 +330,15 @@ fn default_batch_size() -> usize {
 }
 fn default_max_body_chars() -> usize {
     2000
+}
+fn default_imap_timeout_secs() -> u64 {
+    30
+}
+fn default_imap_keepalive_secs() -> u64 {
+    45
+}
+fn default_imap_max_reconnects() -> u32 {
+    3
 }
 fn default_max_attempts() -> u32 {
     3

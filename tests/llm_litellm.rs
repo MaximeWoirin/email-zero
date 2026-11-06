@@ -218,6 +218,7 @@ fn pipeline_cfg(model: &str) -> PipelineConfig {
         temperature: 0.2,
         top_p: 1.0,
         max_tokens: 4096,
+        keepalive: None,
     }
 }
 
