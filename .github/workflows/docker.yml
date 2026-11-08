@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # Build de l'image linux/arm64 (le stage builder tourne sur
       # $BUILDPLATFORM et cross-compile en aarch64) puis smoke : le binaire
