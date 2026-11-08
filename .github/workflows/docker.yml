@@ -17,7 +17,7 @@ jobs:
       # Build de l'image linux/arm64 (le stage builder tourne sur
       # $BUILDPLATFORM et cross-compile en aarch64) puis smoke : le binaire
       # arm64 repond a --version sous QEMU.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           platforms: linux/arm64
           load: true
